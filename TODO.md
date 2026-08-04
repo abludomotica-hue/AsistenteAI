@@ -23,11 +23,11 @@
       verificado (fuente: board `guition-jc4880p443` de xiaozhi-esp32 + firmware funcionando):
       I2S MCLK/BCLK/LRCK/DOUT/DIN = 13/12/10/9/48, I2C SDA/SCL = 7/8 (bus compartido codec+touch),
       PA = 11, Display MIPI-DSI RST=5 BL=23, Touch GT911 RST=22 INT=21, Boot=35, LED=26.
-- [ ] **H2.** Migrar `/llm` al Bridge (DECIDIDO: el ESP32 no debe hablar directo con NVIDIA):
-      - Nuevo endpoint `/llm` en `bridge_server.py` (proxy REST hacia Nemotron).
-      - Historial de conversación + system prompt gestionados en el Bridge.
-      - Firmware: cambiar `getLLMResponse()` a `http://192.168.1.58:5000/llm` y eliminar
-        `API_KEY_LLM` del dispositivo.
+- [x] **H2.** ~~Migrar `/llm` al Bridge~~ ✅ (3/Ago, commits `b169795` + `68d79f8`):
+      - Endpoint `/llm` en `bridge_server.py` v2.1 (proxy REST hacia Nemotron).
+      - Historial de conversación + system prompt + `LLM_API_KEY` en el Bridge.
+      - Firmware sin API keys: `getLLMResponse()` → `BRIDGE_BASE_URL "/llm"`.
+      - **PENDIENTE:** re-desplegar el bridge y probar pipeline E2E con voz real.
 - [ ] **H3.** Robustez firmware: timeout en `setupWiFi()` (hoy bloquea infinito), reconexión
       WiFi automática por eventos, reintentos con backoff en STT/TTS/LLM, eliminar el
       `while (!Serial)` bloqueante del arranque (AsistenteAI.ino:86).

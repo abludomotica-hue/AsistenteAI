@@ -1,7 +1,7 @@
 # Avance del Proyecto: Edge AI Voice Assistant
 
 **Dispositivo:** JC4880P443C (ESP32-P4 Dual Core 400MHz)  
-**Última actualización:** 28 de Julio de 2026
+**Última actualización:** 3 de Agosto de 2026
 
 ---
 
@@ -64,6 +64,29 @@ Altavoz ← ES8311 (DAC) ← ESP32-P4 ← WiFi ← Debian Bridge ←────
 ---
 
 ## Bitácora de Sesiones
+
+### 📅 3 de Agosto de 2026 — Saneamiento de Seguridad + LLM migrado al Bridge
+
+**Parte 1 — Seguridad (TODO: C1 parcial, C2, C3):**
+- Auditoría completa del proyecto: secrets en texto plano en firmware, docs y script de despliegue.
+- Credenciales del firmware movidas a `config.h` (gitignored, plantilla `config.h.example`).
+- Eliminadas `API_KEY_ASR`/`API_KEY_TTS` del firmware (estaban definidas pero nunca se usaban).
+- `deploy_bridge_v2.py` sin password SSH ni keys embebidas (lee `bridge.env` gitignored + `DEBIAN_PASS` por env var).
+- `bridge_server.py` sin Function ID real como default; guard en `init_stt()`.
+- Documentos históricos redactados. `.gitignore` creado (secrets, binarios, kit vendor de ~1 GB).
+- Repo git inicializado con commit base verificado: **cero secrets en el historial**.
+- ⚠️ PENDIENTE DEL USUARIO: rotar las keys en build.nvidia.com, password SSH de la VM y (opcional) WiFi.
+
+**Parte 2 — H2: LLM a través del Bridge:**
+- Nuevo endpoint `POST /llm` en `bridge_server.py` (v2.1): proxy REST hacia Nemotron.
+- El Bridge ahora gestiona: API key del LLM, historial de conversación (thread-safe,
+  recorte configurable vía `LLM_MAX_HISTORY`) y system prompt (`LLM_SYSTEM_PROMPT`).
+- Soporte de `{"reset": true}` para reiniciar la conversación.
+- El firmware ya NO habla con NVIDIA ni contiene API keys: `getLLMResponse()` apunta a
+  `BRIDGE_BASE_URL "/llm"` con payload mínimo `{"input": "..."}` (respuesta: texto plano).
+- Descubrimiento: el LLM usa una API key distinta a STT/TTS → variable `LLM_API_KEY` propia.
+- Verificado: sintaxis Python OK y firmware compila para ESP32-P4 (83% flash, 10% RAM).
+- Pendiente: re-desplegar el bridge (`python deploy_bridge_v2.py`) y probar pipeline E2E.
 
 ### 📅 28 de Julio de 2026 — ¡HITO HISTÓRICO! Primera Voz Reconocida
 
@@ -141,7 +164,13 @@ Altavoz ← ES8311 (DAC) ← ESP32-P4 ← WiFi ← Debian Bridge ←────
 |---------|-------------|
 | `AsistenteAI.ino` | Sketch principal: FreeRTOS, pipeline STT→LLM→TTS, diagnóstico de audio |
 | `ES8311_Init.h` | Driver del codec ES8311: inicialización I2C, volcado de registros, HPF |
-| `bridge_server.py` | Servidor puente en Debian VM (endpoints /stt, /tts, /llm) |
+| `config.h` | Configuración real del dispositivo (WiFi, Bridge). **Fuera de git** |
+| `config.h.example` | Plantilla de `config.h` (commiteada) |
+| `bridge_server.py` | Servidor puente en Debian VM (endpoints /stt, /tts, /llm, /health) |
+| `bridge.env` | Variables reales del bridge (keys, modelos). **Fuera de git** |
+| `bridge.env.example` | Plantilla de `bridge.env` (commiteada) |
+| `deploy_bridge_v2.py` | Despliegue del bridge por SSH + systemd |
+| `TODO.md` | Backlog priorizado (Critical/High/Medium/Low) |
 
 ## Configuración de Pines (JC4880P443C)
 
