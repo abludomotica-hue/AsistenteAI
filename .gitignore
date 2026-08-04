@@ -1,0 +1,39 @@
+# ============================================
+# SECRETS — NUNCA subir a git
+# ============================================
+config.h
+bridge.env
+.env
+*.env.local
+DOCUMENT/API_nvidia.txt
+
+# ============================================
+# Herramientas y binarios grandes
+# (descargables / reproducibles, no versionar)
+# ============================================
+arduino-cli.exe
+arduino-cli.zip
+P4-JC4880P443-V1.8.bin
+
+# Kit de referencia del fabricante (~1 GB: demos,
+# datasheets, herramientas de flasheo). Se conserva
+# en disco como material de consulta.
+JC4880P443C_I_W/
+
+# ============================================
+# Artefactos de compilación
+# ============================================
+build/
+*.elf
+*.map
+*.bin.out
+__pycache__/
+*.pyc
+
+# ============================================
+# SO / Editor / Sesiones
+# ============================================
+Thumbs.db
+desktop.ini
+.vscode/
+.opencode/
