@@ -8,14 +8,14 @@
 
 ## 🔴 CRITICAL
 
-- [ ] **C1.** Rotar TODAS las secrets expuestas (NVIDIA API keys, WiFi, SSH) y sacarlas del código:
-      firmware → NVS/partición de config; bridge → `.env`; deploy → variables de entorno.
-      Archivos afectados: `AsistenteAI.ino:17-22`, `DOCUMENT/API_nvidia.txt`, `deploy_bridge_v2.py:32,60`.
-      Crear `.gitignore` antes del primer commit.
-- [ ] **C2.** Eliminar `API_KEY_ASR` y `API_KEY_TTS` del firmware (definidas pero nunca usadas;
-      código muerto que además expone secretos).
-- [ ] **C3.** Inicializar repo git con commit base limpio ANTES de cualquier cambio futuro
-      (regla del proyecto: cada mejora = commit independiente).
+- [x] **C1.** ~~Sacar secrets del código~~ ✅ (3/Ago): firmware → `config.h` (gitignored),
+      bridge/deploy → `bridge.env` (gitignored), plantillas `*.example` commiteadas.
+      **PENDIENTE DEL USUARIO:** rotar las keys en build.nvidia.com (estuvieron expuestas),
+      password SSH de la VM Debian y, si se desea, el password WiFi; luego actualizar
+      `config.h`, `bridge.env` y re-desplegar el bridge.
+- [x] **C2.** ~~Eliminar `API_KEY_ASR` y `API_KEY_TTS` del firmware~~ ✅ (3/Ago, commit base).
+- [x] **C3.** ~~Inicializar repo git con commit base limpio~~ ✅ (3/Ago, commit `123085f`,
+      verificado: cero secrets en el historial).
 
 ## 🟠 HIGH
 
