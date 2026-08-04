@@ -14,11 +14,8 @@
 #define WIFI_PASS "TU_PASSWORD_WIFI"
 
 // --- Bridge Server (VM Debian) ---
+// STT, TTS y LLM se resuelven en el Bridge; el dispositivo no necesita
+// API keys (tarea H2 completada).
 #define BRIDGE_BASE_URL "http://192.168.1.XX:5000"
-
-// --- NVIDIA LLM (Nemotron) ---
-// NOTA: esta key desaparecerá del firmware al completar la
-// tarea H2 del TODO.md (el LLM pasará a gestionarlo el Bridge).
-#define NVIDIA_LLM_API_KEY "nvapi-XXXX"
 
 #endif

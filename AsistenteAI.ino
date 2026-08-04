@@ -13,14 +13,12 @@ HWCDC miPuertoUSB;
 #include "config.h"
 
 // ==========================================
-// CONFIGURACIÓN DE RED Y APIS
+// CONFIGURACIÓN DE RED
 // Los valores reales viven en config.h (fuera de git).
 // Plantilla: config.h.example
 // ==========================================
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASS;
-
-const char *API_KEY_LLM = NVIDIA_LLM_API_KEY;
 
 // ==========================================
 // PINES DE AUDIO (JC4880P443C)
@@ -306,21 +304,14 @@ String recordAndTranscribe() {
 String getLLMResponse(String promptText) {
   if (WiFi.status() != WL_CONNECTED) return "";
   HTTPClient http;
-  http.begin("https://integrate.api.nvidia.com/v1/chat/completions");
-  http.setTimeout(30000); // 30 segundos de timeout para el LLM
+  // El LLM se gestiona en el Bridge (H2): historial, system prompt y la API
+  // key viven allá. El ESP32 solo envía el texto del usuario.
+  http.begin(BRIDGE_BASE_URL "/llm");
+  http.setTimeout(45000); // 45s: el Bridge añade un salto hacia NVIDIA
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", String("Bearer ") + API_KEY_LLM);
 
   JsonDocument payloadDoc;
-  payloadDoc["model"] = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning";
-  payloadDoc["max_tokens"] = 1024;
-  payloadDoc["temperature"] = 0.6;
-  
-  JsonArray messages = payloadDoc["messages"].to<JsonArray>();
-  JsonObject userMsg = messages.add<JsonObject>();
-  userMsg["role"] = "user";
-  userMsg["content"] = promptText;
-  
+  payloadDoc["input"] = promptText;
   String payload;
   serializeJson(payloadDoc, payload);
 
@@ -328,15 +319,11 @@ String getLLMResponse(String promptText) {
   String responseText = "";
 
   if (httpResponseCode == 200) {
-    String response = http.getString();
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, response);
-    if (!error) {
-      const char* content = doc["choices"][0]["message"]["content"];
-      if (content) responseText = String(content);
-    }
+    responseText = http.getString();
+    Serial.println(">>> LLM OK (vía Bridge).");
+    Serial.flush();
   } else {
-    Serial.print("Error LLM HTTP: ");
+    Serial.print("Error LLM HTTP (Bridge): ");
     Serial.println(httpResponseCode);
     Serial.flush();
   }
