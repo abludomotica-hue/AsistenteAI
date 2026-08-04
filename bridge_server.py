@@ -1,16 +1,24 @@
 """
-Bridge Server v2 - NVIDIA Riva / Magpie TTS Multilingual
-=========================================================
-Servidor puente Flask que conecta el ESP32-P4 con NVIDIA NIM vía gRPC.
+Bridge Server v2.1 - NVIDIA Riva / Magpie TTS Multilingual / LLM Proxy
+=======================================================================
+Servidor puente Flask que conecta el ESP32-P4 con NVIDIA NIM vía gRPC/REST.
 
 Endpoints:
   POST /stt  - Recibe audio WAV, devuelve texto (Parakeet ASR)
   POST /tts  - Recibe JSON {"input": "texto"}, devuelve audio PCM (Magpie TTS)
+  POST /llm  - Recibe JSON {"input": "texto"}, devuelve respuesta en texto
+               plano (Nemotron). El Bridge mantiene el historial de
+               conversación y el system prompt; el ESP32 no guarda estado.
+               Opcional: {"reset": true} para reiniciar la conversación.
   GET  /health - Estado del servidor y servicios
 
 Despliegue: /home/ablutech/riva-bridge/ en Debian VM (192.168.1.58)
 Configuración: Variables de entorno en .env (cargadas por systemd)
 
+Cambios v2.1 (03-Ago-2026):
+  - Endpoint /llm: proxy REST hacia NVIDIA Nemotron (tarea H2). El firmware
+    ya no habla directo con NVIDIA ni contiene API keys.
+  - Historial de conversación y system prompt gestionados en el Bridge.
 Cambios v2 (28-Jul-2026):
   - Migración de FastPitch (deprecado) a Magpie TTS Multilingual
   - Voz: Magpie-Multilingual.ES-US.Diego (español)
@@ -22,9 +30,12 @@ Cambios v2 (28-Jul-2026):
 import os
 import logging
 import traceback
+import time
+import threading
 import grpc
 import riva.client
 import re
+import requests
 from flask import Flask, request, Response, jsonify, stream_with_context
 
 # ==========================================
@@ -55,6 +66,25 @@ TTS_LANG    = os.getenv("TTS_LANG", "es-US")
 TTS_SAMPLE_RATE = int(os.getenv("TTS_SAMPLE_RATE", "16000"))
 
 GRPC_URI = "grpc.nvcf.nvidia.com:443"
+
+# ==========================================
+# CONFIGURACIÓN LLM (Nemotron vía NVIDIA NIM REST)
+# ==========================================
+LLM_API_URL     = "https://integrate.api.nvidia.com/v1/chat/completions"
+LLM_MODEL       = os.getenv("LLM_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")
+LLM_MAX_TOKENS  = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
+# Máximo de mensajes de historial a conservar (user + assistant combinados)
+LLM_MAX_HISTORY = int(os.getenv("LLM_MAX_HISTORY", "10"))
+# El LLM puede usar una API key propia (en este proyecto el LLM usa una key
+# distinta a la de STT/TTS). Si LLM_API_KEY no está definida, se usa NVIDIA_API_KEY.
+LLM_API_KEY     = os.getenv("LLM_API_KEY", "") or NVIDIA_API_KEY
+LLM_SYSTEM_PROMPT = os.getenv(
+    "LLM_SYSTEM_PROMPT",
+    "Eres un asistente de voz doméstico inteligente. Responde siempre en español, "
+    "de forma breve y natural (máximo 2 o 3 frases), ya que tu respuesta será "
+    "reproducida por voz. No uses emojis ni formato markdown."
+)
 
 # ==========================================
 # INICIALIZACIÓN DE CLIENTES gRPC
@@ -119,7 +149,7 @@ def health():
     """Endpoint de diagnóstico para verificar el estado del servidor."""
     status = {
         "server": "ok",
-        "version": "2.0 (Magpie TTS)",
+        "version": "2.1 (Magpie TTS + LLM proxy)",
         "stt": {
             "status": "ok" if asr_service else "error",
             "model": "parakeet-1.1b-rnnt-multilingual-asr",
@@ -132,6 +162,12 @@ def health():
             "voice": TTS_VOICE,
             "language": TTS_LANG,
             "sample_rate": TTS_SAMPLE_RATE
+        },
+        "llm": {
+            "status": "ok" if LLM_API_KEY and LLM_API_KEY != "FALTA_API_KEY" else "error",
+            "model": LLM_MODEL,
+            "history_messages": len(llm_history),
+            "max_history": LLM_MAX_HISTORY
         },
         "api_key": "set" if NVIDIA_API_KEY != "FALTA_API_KEY" else "NOT_SET"
     }
@@ -235,7 +271,6 @@ def tts():
                             log.error("  → NVIDIA Server timeout (cold start/overload)")
                         log.error(f"❌ Abortando stream de audio por error gRPC repetido.")
                         return # Termina el stream abruptamente
-                    import time
                     time.sleep(1)
                 except Exception as e:
                     log.error(f"❌ Error TTS inesperado en chunk {i+1}: {e}")
@@ -247,12 +282,90 @@ def tts():
 
 
 # ==========================================
+# LLM (Nemotron vía NVIDIA NIM REST) - Tarea H2
+# ==========================================
+# Historial de conversación en memoria (sesión única del dispositivo).
+# Flask sirve requests en hilos → toda mutación se protege con el lock.
+llm_history = []  # [{"role": "user"/"assistant", "content": str}, ...]
+llm_lock = threading.Lock()
+
+
+@app.route('/llm', methods=['POST'])
+def llm():
+    """Endpoint LLM: recibe {"input": "texto"}, devuelve texto plano.
+
+    El Bridge mantiene el historial y el system prompt; el ESP32 queda sin
+    estado y sin API keys. Opcional: {"reset": true} reinicia la conversación.
+    """
+    data = request.json
+    if not data or 'input' not in data:
+        return "Error: Falta el campo 'input' en el JSON", 400
+
+    text = data.get('input', '').strip()
+    if not text:
+        return "Error: Texto vacío", 400
+
+    if data.get('reset'):
+        with llm_lock:
+            llm_history.clear()
+        log.info("🔄 LLM: Historial de conversación reiniciado")
+
+    with llm_lock:
+        messages = [{"role": "system", "content": LLM_SYSTEM_PROMPT}]
+        messages.extend(llm_history)
+        messages.append({"role": "user", "content": text})
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LLM_API_KEY}",
+    }
+    payload = {
+        "model": LLM_MODEL,
+        "max_tokens": LLM_MAX_TOKENS,
+        "temperature": LLM_TEMPERATURE,
+        "messages": messages,
+    }
+
+    log.info(f"🧠 LLM: \"{text[:80]}{'...' if len(text) > 80 else ''}\" (historial: {len(llm_history)} msgs)")
+
+    response_text = ""
+    last_error = ""
+    for attempt in range(2):
+        try:
+            resp = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=(5, 45))
+            if resp.status_code == 200:
+                doc = resp.json()
+                response_text = doc["choices"][0]["message"]["content"] or ""
+                break
+            last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            log.warning(f"⚠️  LLM intento {attempt+1} falló: {last_error}")
+        except Exception as e:
+            last_error = str(e)
+            log.warning(f"⚠️  LLM intento {attempt+1} falló: {e}")
+        time.sleep(1)
+
+    if not response_text:
+        log.error(f"❌ LLM sin respuesta. Último error: {last_error}")
+        return "Error: LLM no disponible", 502
+
+    # Solo se consolida el historial si la llamada fue exitosa
+    with llm_lock:
+        llm_history.append({"role": "user", "content": text})
+        llm_history.append({"role": "assistant", "content": response_text})
+        while len(llm_history) > LLM_MAX_HISTORY:
+            llm_history.pop(0)
+
+    log.info(f"💬 LLM respondió: \"{response_text[:80]}{'...' if len(response_text) > 80 else ''}\"")
+    return response_text
+
+
+# ==========================================
 # ARRANQUE
 # ==========================================
 if __name__ == '__main__':
     log.info("=" * 60)
-    log.info("  NVIDIA Riva Bridge Server v2.0")
-    log.info("  (Parakeet ASR + Magpie TTS Multilingual)")
+    log.info("  NVIDIA Riva Bridge Server v2.1")
+    log.info("  (Parakeet ASR + Magpie TTS + LLM Proxy)")
     log.info("=" * 60)
 
     # Validar configuración
@@ -263,11 +376,18 @@ if __name__ == '__main__':
     init_stt()
     init_tts()
 
+    if not LLM_API_KEY or LLM_API_KEY == "FALTA_API_KEY":
+        log.warning("⚠️  LLM_API_KEY no configurada. Endpoint /llm devolverá 502.")
+    else:
+        log.info(f"✅ LLM configurado: {LLM_MODEL}")
+        log.info(f"   Historial máximo: {LLM_MAX_HISTORY} mensajes")
+
     log.info("")
     log.info("Servidor escuchando en http://0.0.0.0:5000")
     log.info("Endpoints:")
     log.info("  POST /stt    - Transcripción de audio")
     log.info("  POST /tts    - Síntesis de voz")
+    log.info("  POST /llm    - Conversación (Nemotron, con historial)")
     log.info("  GET  /health - Estado del servidor")
     log.info("")
 
