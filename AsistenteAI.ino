@@ -47,6 +47,14 @@ enum AudioCommand {
 
 volatile bool interruptPlayback = false;
 
+// ==========================================
+// ROBUSTEZ HTTP (H3)
+// Se reintenta ante errores de conexión (code < 0) o de servidor (5xx),
+// nunca ante 4xx (el request es inválido y fallaría igual).
+// ==========================================
+#define HTTP_MAX_ATTEMPTS 2
+bool httpShouldRetry(int code) { return code < 0 || code >= 500; }
+
 void setupWiFi();
 void setupAudio();
 String recordAndTranscribe();
@@ -82,7 +90,10 @@ void audioTask(void *pvParameters) {
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial) { delay(10); } 
+  // Espera acotada al Monitor Serie (H3): sin USB conectado el dispositivo
+  // arranca igual tras 3 s (necesario para operación autónoma empotrada).
+  uint32_t serialWaitStart = millis();
+  while (!Serial && (millis() - serialWaitStart < 3000)) { delay(10); }
   delay(1000);
   Serial.println("\n\n--- INICIANDO SISTEMA (Arquitectura FreeRTOS) ---"); Serial.flush();
   
@@ -114,12 +125,29 @@ void loop() {
 
 void setupWiFi() {
   Serial.print("Conectando a Wi-Fi"); Serial.flush();
+  // Auto-reconexión en segundo plano si el AP se cae en operación (H3)
+  WiFi.setAutoReconnect(true);
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print("."); Serial.flush();
+
+  // Hasta 3 intentos de 10 s al arranque; si falla, el dispositivo arranca
+  // igual y el auto-reconnect seguirá intentando en segundo plano.
+  const int MAX_ATTEMPTS = 3;
+  for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    uint32_t attemptStart = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - attemptStart < 10000)) {
+      delay(500);
+      Serial.print("."); Serial.flush();
+    }
+    if (WiFi.status() == WL_CONNECTED) break;
+    Serial.printf("\n[WiFi] Intento %d/%d fallido (timeout 10 s).\n", attempt, MAX_ATTEMPTS);
+    Serial.flush();
   }
-  Serial.println("\nWiFi Conectado!"); Serial.flush();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi Conectado!"); Serial.flush();
+  } else {
+    Serial.println("\n[WiFi] Sin conexión al arranque; auto-reconexión activa en segundo plano."); Serial.flush();
+  }
 }
 
 void setupAudio() {
@@ -279,9 +307,17 @@ String recordAndTranscribe() {
   http.setTimeout(20000); 
   http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
   
-  int httpResponseCode = http.POST(fullPayload, totalLen);
+  int httpResponseCode = -1;
   String transcribedText = "";
-  
+  for (int attempt = 1; attempt <= HTTP_MAX_ATTEMPTS; attempt++) {
+    httpResponseCode = http.POST(fullPayload, totalLen);
+    if (!httpShouldRetry(httpResponseCode)) break;
+    Serial.printf("[STT] Intento %d/%d falló (HTTP %d). Reintentando en 1 s...\n",
+                  attempt, HTTP_MAX_ATTEMPTS, httpResponseCode);
+    Serial.flush();
+    delay(1000);
+  }
+
   if (httpResponseCode == 200) {
     transcribedText = http.getString();
     Serial.println(">>> STT OK."); Serial.flush();
@@ -315,8 +351,16 @@ String getLLMResponse(String promptText) {
   String payload;
   serializeJson(payloadDoc, payload);
 
-  int httpResponseCode = http.POST(payload);
+  int httpResponseCode = -1;
   String responseText = "";
+  for (int attempt = 1; attempt <= HTTP_MAX_ATTEMPTS; attempt++) {
+    httpResponseCode = http.POST(payload);
+    if (!httpShouldRetry(httpResponseCode)) break;
+    Serial.printf("[LLM] Intento %d/%d falló (HTTP %d). Reintentando en 1 s...\n",
+                  attempt, HTTP_MAX_ATTEMPTS, httpResponseCode);
+    Serial.flush();
+    delay(1000);
+  }
 
   if (httpResponseCode == 200) {
     responseText = http.getString();
@@ -344,7 +388,15 @@ void synthesizeAndPlay(String textToSpeak) {
   String payload;
   serializeJson(payloadDoc, payload);
 
-  int httpResponseCode = http.POST(payload);
+  int httpResponseCode = -1;
+  for (int attempt = 1; attempt <= HTTP_MAX_ATTEMPTS; attempt++) {
+    httpResponseCode = http.POST(payload);
+    if (!httpShouldRetry(httpResponseCode)) break;
+    Serial.printf("[TTS] Intento %d/%d falló (HTTP %d). Reintentando en 1 s...\n",
+                  attempt, HTTP_MAX_ATTEMPTS, httpResponseCode);
+    Serial.flush();
+    delay(1000);
+  }
   
   if (httpResponseCode == 200) {
     WiFiClient* stream = http.getStreamPtr();
