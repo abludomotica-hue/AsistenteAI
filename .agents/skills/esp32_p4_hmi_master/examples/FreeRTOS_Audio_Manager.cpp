@@ -62,7 +62,8 @@ void setupAudioManager() {
     audioCommandQueue = xQueueCreate(10, sizeof(AudioCommand));
     
     // 2. Initialize I2S Pins (Refer to pinout.md)
-    i2s.setPins(21, 22, 23, 24); // BCLK, WS, DOUT, DIN
+    // BCLK=12, WS=10, DOUT=9, DIN=48, MCLK=13 (el ES8311 exige MCLK vivo)
+    i2s.setPins(12, 10, 9, 48, 13);
     i2s.begin(I2S_MODE_STD, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO, I2S_STD_SLOT_BOTH);
     
     // 3. Pin the heavy audio task to Core 0 (PRO_CPU)

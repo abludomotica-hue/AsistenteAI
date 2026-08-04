@@ -19,10 +19,11 @@
 
 ## 🟠 HIGH
 
-- [ ] **H1.** Corregir `.agents/skills/esp32_p4_hmi_master/resources/pinout.md` con el pinout
-      verificado (fuente: board `guition-jc4880p443` de xiaozhi-esp32 + firmware funcionando):
-      I2S MCLK/BCLK/LRCK/DOUT/DIN = 13/12/10/9/48, I2C SDA/SCL = 7/8 (bus compartido codec+touch),
-      PA = 11, Display MIPI-DSI RST=5 BL=23, Touch GT911 RST=22 INT=21, Boot=35, LED=26.
+- [x] **H1.** ~~Corregir `pinout.md` del skill~~ ✅ (4/Ago): reescrito con fuentes verificadas
+      ([FW]/[XZ]/[VD]/[SC]). Corregido también el ejemplo `FreeRTOS_Audio_Manager.cpp`
+      (I2S 12/10/9/48 + MCLK 13). Hallazgos extra documentados: SD en GPIO 39-44 (+power
+      GPIO45), UART0=37/38, cámara MIPI CSI-2 (no DVP), RS485 TX=26 con RX/EN por verificar,
+      conflicto GPIO26 (LED vs RS485 TX).
 - [x] **H2.** ~~Migrar `/llm` al Bridge~~ ✅ (3/Ago, commits `b169795` + `68d79f8`):
       - Endpoint `/llm` en `bridge_server.py` v2.1 (proxy REST hacia Nemotron).
       - Historial de conversación + system prompt + `LLM_API_KEY` en el Bridge.
