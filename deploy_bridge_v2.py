@@ -182,7 +182,7 @@ def main():
             execute(ssh, f"python3 -m venv {REMOTE_DIR}/venv",
                     "python3 -m venv")
 
-        execute(ssh, f"{REMOTE_DIR}/venv/bin/pip install -q --upgrade flask nvidia-riva-client grpcio requests",
+        execute(ssh, f"{REMOTE_DIR}/venv/bin/pip install -q --upgrade flask nvidia-riva-client grpcio requests waitress",
                 "Actualizando pip packages...")
         print("  ✅ Dependencias OK")
 

@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include <ESP_I2S.h>
 #include <HWCDC.h>
+#include <atomic> // (M3 / RISK-003) Concurrencia atómica entre núcleos
 
 HWCDC miPuertoUSB;
 #define Serial miPuertoUSB
@@ -35,6 +36,20 @@ const char *password = WIFI_PASS;
 I2SClass i2s;
 
 // ==========================================
+// BUFFERS DE AUDIO EN PSRAM (Asignación Estática - M1 / RISK-001)
+// Evita fragmentación de PSRAM al eliminar ciclos malloc/free de ~1.9MB
+// ==========================================
+#define AUDIO_SAMPLE_RATE 16000
+#define AUDIO_MAX_DURATION_SEC 15
+#define STEREO_BUFFER_SIZE (AUDIO_SAMPLE_RATE * 4 * AUDIO_MAX_DURATION_SEC) // 960 KB
+#define MONO_BUFFER_SIZE   (AUDIO_SAMPLE_RATE * 2 * AUDIO_MAX_DURATION_SEC) // 480 KB
+#define PAYLOAD_BUFFER_SIZE (MONO_BUFFER_SIZE + 1024)                       // ~481 KB
+
+uint8_t* psramStereoBuffer = NULL;
+uint8_t* psramMonoBuffer = NULL;
+uint8_t* psramPayloadBuffer = NULL;
+
+// ==========================================
 // ARQUITECTURA FREERTOS
 // ==========================================
 TaskHandle_t audioTaskHandle = NULL;
@@ -45,7 +60,47 @@ enum AudioCommand {
   CMD_START_PIPELINE
 };
 
-volatile bool interruptPlayback = false;
+// Protección atómica para concurrencia entre Core 0 y Core 1 (M3 / Mitigación RISK-003)
+std::atomic<bool> interruptPlayback(false);
+
+// ==========================================
+// TELEMETRÍA Y DIAGNÓSTICO (Tarea M4 / Diagnostics Service)
+// Mide latencia por etapa e imprime reporte sin uso de heap.
+// ==========================================
+struct PipelineMetrics {
+  uint32_t pipelineStartMs;
+  uint32_t recordStartMs;
+  uint32_t recordDurationMs;
+  uint32_t sttStartMs;
+  uint32_t sttDurationMs;
+  uint32_t llmStartMs;
+  uint32_t llmDurationMs;
+  uint32_t ttsStartMs;
+  uint32_t ttsFirstChunkMs;  // Time to First Audio (TTFA)
+  uint32_t ttsPlayDurationMs;
+  uint32_t totalPipelineMs;
+  
+  void reset() {
+    memset(this, 0, sizeof(PipelineMetrics));
+  }
+  
+  void printReport() {
+    Serial.println("\n=======================================================");
+    Serial.println("         📊 TELEMETRÍA DEL PIPELINE (M4) 📊          ");
+    Serial.println("=======================================================");
+    Serial.printf(" 🎤 Captura I2S + Downmix:    %6u ms\n", (uint32_t)recordDurationMs);
+    Serial.printf(" 🗣️  STT (Parakeet ASR):      %6u ms\n", (uint32_t)sttDurationMs);
+    Serial.printf(" 🧠 LLM (Nemotron-3 30B):     %6u ms\n", (uint32_t)llmDurationMs);
+    Serial.printf(" ⚡ TTS Time-to-First-Audio: %6u ms  <-- [Latencia Percibida]\n", (uint32_t)ttsFirstChunkMs);
+    Serial.printf(" 🔊 TTS Duración Audio:      %6u ms\n", (uint32_t)ttsPlayDurationMs);
+    Serial.println("-------------------------------------------------------");
+    Serial.printf(" 🏁 TIEMPO TOTAL E2E:         %6u ms (%.2f s)\n", (uint32_t)totalPipelineMs, totalPipelineMs / 1000.0f);
+    Serial.println("=======================================================\n");
+    Serial.flush();
+  }
+};
+
+PipelineMetrics g_metrics;
 
 // ==========================================
 // ROBUSTEZ HTTP (H3)
@@ -54,6 +109,14 @@ volatile bool interruptPlayback = false;
 // ==========================================
 #define HTTP_MAX_ATTEMPTS 2
 bool httpShouldRetry(int code) { return code < 0 || code >= 500; }
+
+// Autenticación opcional contra el Bridge (H4): si BRIDGE_AUTH_TOKEN está
+// definido y no vacío en config.h, se envía el header X-Bridge-Token.
+void addBridgeAuthHeader(HTTPClient &http) {
+  if (strlen(BRIDGE_AUTH_TOKEN) > 0) {
+    http.addHeader("X-Bridge-Token", BRIDGE_AUTH_TOKEN);
+  }
+}
 
 void setupWiFi();
 void setupAudio();
@@ -67,7 +130,11 @@ void audioTask(void *pvParameters) {
   while (1) {
     if (xQueueReceive(audioCommandQueue, &cmd, portMAX_DELAY) == pdTRUE) {
       if (cmd == CMD_START_PIPELINE) {
-        interruptPlayback = false; // Resetear la bandera AL INICIO del pipeline
+        // DRENADO DE COLA (M3 / RISK-004): Elimina comandos redundantes acumulados durante rebotes o ráfagas
+        xQueueReset(audioCommandQueue);
+        g_metrics.reset();
+        g_metrics.pipelineStartMs = millis();
+        interruptPlayback.store(false, std::memory_order_relaxed); // Reset atómico AL INICIO del pipeline
         Serial.println("\n[Core 0] Iniciando Pipeline de Asistente..."); Serial.flush();
         String text = recordAndTranscribe();
         if (text.length() > 0) {
@@ -82,6 +149,8 @@ void audioTask(void *pvParameters) {
         } else {
             Serial.println("[Core 0] >>> SILENCIO DETECTADO (Ningún texto reconocido)."); Serial.flush();
         }
+        g_metrics.totalPipelineMs = millis() - g_metrics.pipelineStartMs;
+        g_metrics.printReport();
         Serial.println("[Core 0] Pipeline finalizado. Volviendo a reposo."); Serial.flush();
       }
     }
@@ -111,13 +180,24 @@ void setup() {
 }
 
 void loop() {
+  static uint32_t lastTriggerMs = 0;
   if (Serial.available()) {
     char c = Serial.read();
     if (c == '1') {
-      Serial.println("\n[Core 1] Botón presionado. Enviando señal al Core 0..."); Serial.flush();
-      interruptPlayback = true; // Señal para detener reproducción actual
-      AudioCommand cmd = CMD_START_PIPELINE;
-      xQueueSend(audioCommandQueue, &cmd, portMAX_DELAY);
+      uint32_t now = millis();
+      // DEBOUNCE (M3): Ignora disparos dentro de 300 ms para prevenir rebotes de pulsadores/táctiles
+      if (now - lastTriggerMs >= 300) {
+        lastTriggerMs = now;
+        Serial.println("\n[Core 1] Disparador '1' activado. Enviando señal al Core 0..."); Serial.flush();
+        interruptPlayback.store(true, std::memory_order_relaxed); // Señal atómica (Barge-in / RISK-003)
+        AudioCommand cmd = CMD_START_PIPELINE;
+        // Enviar a cola con timeout acotado (50 ms) para nunca bloquear el Core 1 (UI futura)
+        if (xQueueSend(audioCommandQueue, &cmd, pdMS_TO_TICKS(50)) != pdTRUE) {
+          Serial.println("[Core 1] Advertencia: Cola de audio llena. Disparador ignorado."); Serial.flush();
+        }
+      } else {
+        Serial.println("[Core 1] Ignorando rebote de disparador (Debounce < 300ms activo - M3)."); Serial.flush();
+      }
     }
   }
   delay(10);
@@ -127,6 +207,7 @@ void setupWiFi() {
   Serial.print("Conectando a Wi-Fi"); Serial.flush();
   // Auto-reconexión en segundo plano si el AP se cae en operación (H3)
   WiFi.setAutoReconnect(true);
+  WiFi.mode(WIFI_STA);  // Forzar modo Station puro (evita AP+STA accidental)
   WiFi.begin(ssid, password);
 
   // Hasta 3 intentos de 10 s al arranque; si falla, el dispositivo arranca
@@ -144,10 +225,40 @@ void setupWiFi() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
+    // Potencia TX equilibrada para evitar caídas de tensión (Brownouts) por USB
+    WiFi.setTxPower(WIFI_POWER_15dBm);
     Serial.println("\nWiFi Conectado!"); Serial.flush();
+    Serial.println("--- DIAGNÓSTICO WiFi ---");
+    Serial.printf("  IP:        %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("  Gateway:   %s\n", WiFi.gatewayIP().toString().c_str());
+    Serial.printf("  RSSI:      %d dBm\n", WiFi.RSSI());
+    Serial.printf("  Canal:     %d\n", WiFi.channel());
+    Serial.printf("  BSSID:     %s\n", WiFi.BSSIDstr().c_str());
+    Serial.printf("  TX Power:  %d (x0.25 dBm)\n", WiFi.getTxPower());
+    Serial.println("------------------------"); Serial.flush();
   } else {
     Serial.println("\n[WiFi] Sin conexión al arranque; auto-reconexión activa en segundo plano."); Serial.flush();
   }
+
+  // SCAN DE ANTENA: Si TODAS las redes tienen RSSI < -75, la antena tiene problema
+  Serial.println("\n--- SCAN REDES WiFi (Diagnóstico Antena) ---");
+  int n = WiFi.scanNetworks(false, false, false, 300);  // Scan sincrónico, activo
+  if (n > 0) {
+    int strongCount = 0;
+    for (int i = 0; i < n; i++) {
+      int32_t rssi = WiFi.RSSI(i);
+      Serial.printf("  [%2d] %-25s  %4d dBm  CH%2d\n", i + 1, WiFi.SSID(i).c_str(), rssi, WiFi.channel(i));
+      if (rssi > -70) strongCount++;
+    }
+    Serial.printf("\n  Total: %d redes | Señal fuerte (>-70): %d\n", n, strongCount);
+    if (strongCount == 0) {
+      Serial.println("  ⚠️  NINGUNA red con señal fuerte. Posible problema de antena del ESP32-C6.");
+    }
+  } else {
+    Serial.println("  ⚠️  No se encontraron redes WiFi. ¿Antena desconectada?");
+  }
+  WiFi.scanDelete();
+  Serial.println("--- FIN SCAN ---\n"); Serial.flush();
 }
 
 void setupAudio() {
@@ -167,6 +278,18 @@ void setupAudio() {
   
   pinMode(PA_PIN, OUTPUT);
   digitalWrite(PA_PIN, HIGH);
+
+  // ASIGNACIÓN ESTÁTICA EN PSRAM (Tarea M1 / Mitigación RISK-001)
+  Serial.println("Asignando buffers estáticos en PSRAM (~1.9 MB)..."); Serial.flush();
+  psramStereoBuffer = (uint8_t*)heap_caps_malloc(STEREO_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+  psramMonoBuffer = (uint8_t*)heap_caps_malloc(MONO_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+  psramPayloadBuffer = (uint8_t*)heap_caps_malloc(PAYLOAD_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+
+  if (!psramStereoBuffer || !psramMonoBuffer || !psramPayloadBuffer) {
+    Serial.println("¡ERROR FATAL: Memoria PSRAM insuficiente para buffers estáticos!"); Serial.flush();
+  } else {
+    Serial.printf("Buffers PSRAM asignados OK. PSRAM libre restante: %u bytes.\n", (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM)); Serial.flush();
+  }
 }
 
 void generateWavHeader(uint8_t* header, uint32_t wavSize, uint32_t sampleRate) {
@@ -196,22 +319,17 @@ String recordAndTranscribe() {
   Serial.println(">>> GRABANDO (Hasta 15 Segundos)... Hable ahora."); Serial.flush();
   
   
-  uint32_t sampleRate = 16000;
-  uint32_t maxDurationSeconds = 15;
-  uint32_t maxStereoSize = sampleRate * 4 * maxDurationSeconds; // Estéreo desde Hardware
-  uint32_t maxMonoSize = sampleRate * 2 * maxDurationSeconds;   // Mono para NVIDIA
+  uint32_t sampleRate = AUDIO_SAMPLE_RATE;
+  uint32_t maxStereoSize = STEREO_BUFFER_SIZE;
   
-  Serial.println(">>> Asignando buffers en PSRAM..."); Serial.flush();
-  uint8_t* stereoBuffer = (uint8_t*)heap_caps_malloc(maxStereoSize, MALLOC_CAP_SPIRAM);
-  uint8_t* monoBuffer = (uint8_t*)heap_caps_malloc(maxMonoSize, MALLOC_CAP_SPIRAM);
-  
-  if (!stereoBuffer || !monoBuffer) {
-    Serial.println("Error FATAL: No hay memoria PSRAM suficiente."); Serial.flush();
-    if (stereoBuffer) heap_caps_free(stereoBuffer);
-    if (monoBuffer) heap_caps_free(monoBuffer);
+  if (!psramStereoBuffer || !psramMonoBuffer || !psramPayloadBuffer) {
+    Serial.println("Error FATAL: Buffers estáticos en PSRAM no están inicializados."); Serial.flush();
     return "";
   }
+  uint8_t* stereoBuffer = psramStereoBuffer;
+  uint8_t* monoBuffer = psramMonoBuffer;
   
+  g_metrics.recordStartMs = millis();
   i2s.read(); 
   size_t bytesReadTotal = 0;
   Serial.println(">>> Capturando I2S en Estéreo (VAD activo)..."); Serial.flush();
@@ -286,14 +404,11 @@ String recordAndTranscribe() {
   generateWavHeader(wavHeader, actualMonoSize, sampleRate);
   
   uint32_t totalLen = head.length() + 44 + actualMonoSize + tail.length();
-  uint8_t* fullPayload = (uint8_t*)heap_caps_malloc(totalLen, MALLOC_CAP_SPIRAM);
-  
-  if(!fullPayload) {
-    Serial.println("Error FATAL: Memoria PSRAM insuficiente para payload HTTP."); Serial.flush();
-    heap_caps_free(stereoBuffer);
-    heap_caps_free(monoBuffer);
+  if (totalLen > PAYLOAD_BUFFER_SIZE) {
+    Serial.println("Error FATAL: Tamaño de payload excede capacidad del buffer estático en PSRAM."); Serial.flush();
     return "";
   }
+  uint8_t* fullPayload = psramPayloadBuffer;
   
   uint32_t offset = 0;
   memcpy(fullPayload + offset, head.c_str(), head.length()); offset += head.length();
@@ -301,12 +416,15 @@ String recordAndTranscribe() {
   memcpy(fullPayload + offset, monoBuffer, actualMonoSize); offset += actualMonoSize;
   memcpy(fullPayload + offset, tail.c_str(), tail.length());
   
-  Serial.println("Payload ensamblado. Enviando POST a Debian..."); Serial.flush();
+  g_metrics.recordDurationMs = millis() - g_metrics.recordStartMs;
+  Serial.printf("Payload ensamblado (%u bytes). WiFi RSSI: %d dBm. Enviando POST a Debian...\n", totalLen, WiFi.RSSI()); Serial.flush();
   HTTPClient http;
   http.begin(BRIDGE_BASE_URL "/stt"); 
-  http.setTimeout(20000); 
+  http.setTimeout(90000);  // 90s: NVIDIA NIM cold-start puede tomar 30-90s
   http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+  addBridgeAuthHeader(http);
   
+  g_metrics.sttStartMs = millis();
   int httpResponseCode = -1;
   String transcribedText = "";
   for (int attempt = 1; attempt <= HTTP_MAX_ATTEMPTS; attempt++) {
@@ -317,6 +435,7 @@ String recordAndTranscribe() {
     Serial.flush();
     delay(1000);
   }
+  g_metrics.sttDurationMs = millis() - g_metrics.sttStartMs;
 
   if (httpResponseCode == 200) {
     transcribedText = http.getString();
@@ -329,11 +448,7 @@ String recordAndTranscribe() {
   }
   
   http.end();
-  heap_caps_free(stereoBuffer);
-  heap_caps_free(monoBuffer);
-  heap_caps_free(fullPayload);
-  
-  Serial.println(">>> Memoria liberada."); Serial.flush();
+  Serial.println(">>> Captura y procesamiento finalizado (buffers estáticos preservados en PSRAM)."); Serial.flush();
   return transcribedText;
 }
 
@@ -345,12 +460,14 @@ String getLLMResponse(String promptText) {
   http.begin(BRIDGE_BASE_URL "/llm");
   http.setTimeout(45000); // 45s: el Bridge añade un salto hacia NVIDIA
   http.addHeader("Content-Type", "application/json");
+  addBridgeAuthHeader(http);
 
   JsonDocument payloadDoc;
   payloadDoc["input"] = promptText;
   String payload;
   serializeJson(payloadDoc, payload);
 
+  g_metrics.llmStartMs = millis();
   int httpResponseCode = -1;
   String responseText = "";
   for (int attempt = 1; attempt <= HTTP_MAX_ATTEMPTS; attempt++) {
@@ -361,6 +478,7 @@ String getLLMResponse(String promptText) {
     Serial.flush();
     delay(1000);
   }
+  g_metrics.llmDurationMs = millis() - g_metrics.llmStartMs;
 
   if (httpResponseCode == 200) {
     responseText = http.getString();
@@ -382,12 +500,14 @@ void synthesizeAndPlay(String textToSpeak) {
   http.setTimeout(30000); // 30 segundos de timeout
   http.useHTTP10(true); // Fuerza HTTP/1.0 para evitar Chunked Transfer Encoding y corrupción de audio
   http.addHeader("Content-Type", "application/json");
+  addBridgeAuthHeader(http);
 
   JsonDocument payloadDoc;
   payloadDoc["input"] = textToSpeak;
   String payload;
   serializeJson(payloadDoc, payload);
 
+  g_metrics.ttsStartMs = millis();
   int httpResponseCode = -1;
   for (int attempt = 1; attempt <= HTTP_MAX_ATTEMPTS; attempt++) {
     httpResponseCode = http.POST(payload);
@@ -408,11 +528,13 @@ void synthesizeAndPlay(String textToSpeak) {
     
     bool has_leftover = false;
     uint8_t leftover_byte = 0;
+    bool first_chunk_played = false;
+    uint32_t play_start_ms = 0;
 
     // Verificar si sigue conectado o si quedan bytes por leer en el buffer LwIP
     while((http.connected() || stream->available() > 0) && (size > 0 || size == (size_t)-1)) {
-        if (interruptPlayback) {
-            Serial.println("\n[Core 0] Reproducción interrumpida por el usuario."); Serial.flush();
+        if (interruptPlayback.load(std::memory_order_relaxed)) {
+            Serial.println("\n[Core 0] Reproducción interrumpida al instante por el usuario (Barge-in atómico)."); Serial.flush();
             break;
         }
         
@@ -444,6 +566,11 @@ void synthesizeAndPlay(String textToSpeak) {
                        pStereo[i*2] = pMono[i];     // Canal Izquierdo
                        pStereo[i*2 + 1] = pMono[i]; // Canal Derecho
                    }
+                   if (!first_chunk_played) {
+                       g_metrics.ttsFirstChunkMs = millis() - g_metrics.ttsStartMs;
+                       play_start_ms = millis();
+                       first_chunk_played = true;
+                   }
                    i2s.write(stereo_buf, total_bytes * 2);
                    if(size != (size_t)-1) size -= total_bytes;
                }
@@ -456,6 +583,9 @@ void synthesizeAndPlay(String textToSpeak) {
         } else {
             vTaskDelay(pdMS_TO_TICKS(1));
         }
+    }
+    if (first_chunk_played) {
+        g_metrics.ttsPlayDurationMs = millis() - play_start_ms;
     }
     Serial.println("[Core 0] Reproducción finalizada."); Serial.flush();
   } else {

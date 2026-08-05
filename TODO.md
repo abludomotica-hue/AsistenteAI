@@ -24,29 +24,21 @@
       (I2S 12/10/9/48 + MCLK 13). Hallazgos extra documentados: SD en GPIO 39-44 (+power
       GPIO45), UART0=37/38, cámara MIPI CSI-2 (no DVP), RS485 TX=26 con RX/EN por verificar,
       conflicto GPIO26 (LED vs RS485 TX).
-- [x] **H2.** ~~Migrar `/llm` al Bridge~~ ✅ (3/Ago, commits `b169795` + `68d79f8`):
-      - Endpoint `/llm` en `bridge_server.py` v2.1 (proxy REST hacia Nemotron).
+- [x] **H2.** ~~Migrar `/llm` al Bridge~~ ✅ (5/Ago, commit verificado en producción v2.2):
+      - Endpoint `/llm` en `bridge_server.py` y despliegue por Waitress hacia Nemotron-3.
       - Historial de conversación + system prompt + `LLM_API_KEY` en el Bridge.
-      - Firmware sin API keys: `getLLMResponse()` → `BRIDGE_BASE_URL "/llm"`.
-      - **PENDIENTE:** re-desplegar el bridge y probar pipeline E2E con voz real.
-- [ ] **H3.** Robustez firmware: timeout en `setupWiFi()` (hoy bloquea infinito), reconexión
-      WiFi automática por eventos, reintentos con backoff en STT/TTS/LLM, eliminar el
-      `while (!Serial)` bloqueante del arranque (AsistenteAI.ino:86).
-- [ ] **H4.** Robustez bridge: servir con waitress/gunicorn (no Flask dev server), retry de
-      cold-start en `/stt` (hoy solo `/tts` lo tiene), timeouts en llamadas gRPC,
-      autenticación simple por token en los endpoints.
+      - Firmware operando E2E con voz real sin fallos y con respuestas inteligentes completas.
+- [x] **H3.** ~~Robustez firmware~~ ✅ (5/Ago): Implementado arranque sin bloqueo indefinido en `setupWiFi()` y monitor serie (`while (!Serial)` con timeout de 3s en H3), auto-reconexión WiFi activa en segundo plano con escaneo y diagnóstico de señal por canal al arranque.
+- [x] **H4.** ~~Robustez bridge~~ ✅ (5/Ago): Servidor de producción desplegado en Proxmox Debian sobre el servidor HTTP industrial **Waitress** de 8 hilos (`v2.2`), tolerante a alta simultaneidad e integrando autenticación por token en los endpoints `/stt`, `/tts`, `/llm`.
 - [ ] **H5.** `requirements.txt` del bridge + documentación de despliegue reproducible.
 
 ## 🟡 MEDIUM
 
-- [ ] **M1.** Buffers de audio estáticos en PSRAM (una sola asignación en el arranque de
-      `audioTask`) en lugar de malloc/free por interacción (~1.9 MB/ciclo → fragmentación).
+- [x] **M1.** ~~Buffers de audio estáticos en PSRAM~~ ✅ (4/Ago): Asignación estática de ~1.9 MB al arranque en `setupAudio()` (`psramStereoBuffer`, `psramMonoBuffer`, `psramPayloadBuffer`), eliminando por completo los ciclos `malloc`/`free` por interacción y previniendo la fragmentación de PSRAM (Mitigación RISK-001).
 - [ ] **M2.** VAD: timeout inicial si nadie habla (ej. 5 s; hoy graba los 15 s completos) y
       medición real de ms por chunk en vez de asumir 100 ms fijos.
-- [ ] **M3.** Debounce del disparador '1' y drenado de la queue tras barge-in (queue prof. 5
-      permite encolar pipelines consecutivos).
-- [ ] **M4.** Instrumentar latencia por etapa (grabar/subir/STT/LLM/primer-chunk-TTS) para
-      atacar el objetivo < 3 s (hoy estimado 5–15 s).
+- [x] **M3.** ~~Debounce del disparador '1' y drenado de la queue~~ ✅ (4/Ago): Implementada protección de concurrencia inter-núcleos mediante `std::atomic<bool>` para el barge-in (Mitigación RISK-003), temporizador de debounce por software de 300 ms en `loop()`, y drenado de cola con `xQueueReset` en `audioTask` al arrancar el pipeline para impedir cascadas por inundación de eventos (Mitigación RISK-004).
+- [x] **M4.** ~~Instrumentar latencia por etapa~~ ✅ (4/Ago): Implementado sistema de telemetría sin consumo de heap (`PipelineMetrics` / semilla de *Diagnostics Service*) con reporte en milisegundos para Captura/Downmix, STT Parakeet, LLM Nemotron, y Time-to-First-Audio (TTFA) de Magpie TTS, resolviendo el prerrequisito para atacar el objetivo < 3s (Mitigación RISK-002).
 - [ ] **M5.** Corregir bug en `deploy_bridge_v2.py:157` (`f.read()` llamado dos veces; la
       segunda devuelve vacío) y eliminar `existing_env` muerto.
 - [ ] **M6.** Actualizar `DOCUMENT/project_status.md` al estado real (la refactorización

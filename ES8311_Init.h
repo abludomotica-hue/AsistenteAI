@@ -134,6 +134,7 @@ void ES8311_Init() {
     // FASE 2: es8311_start(ES_MODULE_ADC_DAC) - Exacta de ESP-ADF
     // ============================================================
     es8311_write_reg(0x17, 0xBF); // ADC Volumen Máximo
+    es8311_write_reg(0x32, 0x80); // DAC Volumen Moderado (Previene caídas de tensión/Brownouts por USB)
     es8311_write_reg(0x0E, 0x02); // Enciende Analog PGA
     es8311_write_reg(0x12, 0x00); // Enciende DAC
     
