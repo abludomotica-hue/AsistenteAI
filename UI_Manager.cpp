@@ -1,3 +1,13 @@
+// =============================================================================
+// UI_Manager.cpp — Motor HMI LVGL 9 para ESP32-P4 (Fase 3.1)
+// =============================================================================
+// ARQUITECTURA:
+//   - El puerto LVGL (lvgl_port_v9.c) crea su PROPIA tarea interna y mutex.
+//   - Nosotros NO creamos tareas ni mutex adicionales.
+//   - Usamos lvgl_port_lock()/lvgl_port_unlock() para acceso hilo-seguro.
+//   - El callback vsync es OBLIGATORIO para que el flush no se bloquee.
+// =============================================================================
+
 #include "UI_Manager.h"
 #include <lvgl.h>
 #include "lvgl_port_v9.h"
@@ -9,20 +19,15 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_mipi_dsi.h>
-#include "src/touch/esp_lcd_touch_gt911.h"
 #include "src/lcd/esp_lcd_st7701.h"
 #include <atomic>
 
 // Declaración externa para activación táctil (Barge-in hacia Core 0)
 extern std::atomic<bool> interruptPlayback;
 extern QueueHandle_t audioCommandQueue;
-// Reconstrucción local del enum para encolar sin dependencia circular de AsistenteAI.ino
 enum AudioCmdType : uint8_t { CMD_START_VOICE_PIPELINE = 0, CMD_PLAY_SPEAKER_PCM };
 
-TaskHandle_t uiTaskHandle = NULL;
-SemaphoreHandle_t xGuiSemaphore = NULL;
-
-// Componentes gráficos en memoria LVGL
+// Componentes gráficos en memoria LVGL (punteros estáticos)
 static lv_obj_t* main_container = NULL;
 static lv_obj_t* header_wifi_lbl = NULL;
 static lv_obj_t* status_panel = NULL;
@@ -33,7 +38,11 @@ static lv_obj_t* info_text_lbl = NULL;
 static lv_obj_t* btn_listen = NULL;
 static lv_obj_t* btn_lbl = NULL;
 
-// Configuración LEDC para control de brillo de pantalla MIPI DSI
+// Dimensiones lógicas de LVGL tras rotación 90° (800 ancho × 480 alto)
+#define UI_SCREEN_W  800
+#define UI_SCREEN_H  480
+
+// Configuración LEDC para control de brillo
 #define BSP_LCD_BACKLIGHT   GPIO_NUM_23
 #define LCD_LEDC_CH         LEDC_CHANNEL_0
 
@@ -44,7 +53,7 @@ static void lcd_brightness_init() {
         .channel = LCD_LEDC_CH,
         .intr_type = LEDC_INTR_DISABLE,
         .timer_sel = LEDC_TIMER_1,
-        .duty = 1023, // 100% de brillo por defecto (10 bits: 0-1023)
+        .duty = 1023,
         .hpoint = 0
     };
     const ledc_timer_config_t backlight_tmr = {
@@ -58,42 +67,53 @@ static void lcd_brightness_init() {
     ledc_channel_config(&backlight_ch);
 }
 
-// Callback de evento al presionar el botón de escucha en la pantalla táctil
-static void btn_listen_event_cb(lv_event_t * e) {
-    lv_event_code_t code = lv_event_get_code(e);
-    if(code == LV_EVENT_CLICKED) {
-        Serial.println("\n[UI Táctil] Botón de escucha activado en Core 1. Disparando al Core 0...");
+// ============================================================
+// CALLBACK VSYNC — ¡OBLIGATORIO! Sin esto, el flush se bloquea
+// para siempre en ulTaskNotifyTake(). Es la causa #1 de la
+// pantalla blanca.
+// ============================================================
+IRAM_ATTR static bool mipi_dsi_lcd_on_vsync_event(
+    esp_lcd_panel_handle_t panel,
+    esp_lcd_dpi_panel_event_data_t *edata,
+    void *user_ctx)
+{
+    return lvgl_port_notify_lcd_vsync();
+}
+
+// Callback de botón táctil en pantalla
+static void btn_listen_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        Serial.println("\n[UI Táctil] Botón activado. Disparando al Core 0...");
         Serial.flush();
-        interruptPlayback.store(true, std::memory_order_relaxed); // Señal de Barge-In atómica
+        interruptPlayback.store(true, std::memory_order_relaxed);
         uint8_t cmd = CMD_START_VOICE_PIPELINE;
         if (audioCommandQueue && xQueueSend(audioCommandQueue, &cmd, pdMS_TO_TICKS(50)) != pdTRUE) {
             Serial.println("[UI Táctil] Advertencia: Cola de audio llena.");
-        } else {
-            ui_set_state(UI_STATE_LISTENING, "Capturando voz por micrófono I2S (Max 5s silencio timeout)...");
         }
     }
 }
 
-// Construcción del diseño visual Premium (Glassmorphism Dark Mode)
+// Construcción del diseño visual (Obsidian Dark Mode)
+// Con rotación 90°, LVGL opera en 800×480 (landscape lógico)
 static void build_ai_assistant_ui() {
-    // 1. Contenedor Raíz (Obsidian Dark Mode)
+    // 1. Contenedor Raíz
     main_container = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(main_container, 480, 800);
+    lv_obj_set_size(main_container, UI_SCREEN_W, UI_SCREEN_H);
     lv_obj_set_style_bg_color(main_container, lv_color_hex(0x0A0F1D), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(main_container, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(main_container, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(main_container, 20, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(main_container, 15, LV_PART_MAIN);
     lv_obj_clear_flag(main_container, LV_OBJ_FLAG_SCROLLABLE);
 
-    // 2. Barra Superior (Header - Estado y Sistema)
+    // 2. Barra Superior (Header)
     lv_obj_t* header = lv_obj_create(main_container);
-    lv_obj_set_size(header, 440, 50);
+    lv_obj_set_size(header, UI_SCREEN_W - 30, 44);
     lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(header, lv_color_hex(0x151C30), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(header, LV_OPA_80, LV_PART_MAIN);
     lv_obj_set_style_border_color(header, lv_color_hex(0x2E3D5C), LV_PART_MAIN);
     lv_obj_set_style_border_width(header, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(header, 12, LV_PART_MAIN);
+    lv_obj_set_style_radius(header, 10, LV_PART_MAIN);
     lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* title_lbl = lv_label_create(header);
@@ -103,40 +123,40 @@ static void build_ai_assistant_ui() {
     lv_obj_align(title_lbl, LV_ALIGN_LEFT_MID, 5, 0);
 
     header_wifi_lbl = lv_label_create(header);
-    lv_label_set_text(header_wifi_lbl, "WiFi: Búsqueda...");
+    lv_label_set_text(header_wifi_lbl, "WiFi: ...");
     lv_obj_set_style_text_color(header_wifi_lbl, lv_color_hex(0xFFA500), LV_PART_MAIN);
     lv_obj_set_style_text_font(header_wifi_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
     lv_obj_align(header_wifi_lbl, LV_ALIGN_RIGHT_MID, -5, 0);
 
-    // 3. Panel Central Interactivo y Visualizador (Telemetry & AI State)
+    // 3. Panel Central (Estado AI)
     status_panel = lv_obj_create(main_container);
-    lv_obj_set_size(status_panel, 440, 380);
-    lv_obj_align(status_panel, LV_ALIGN_TOP_MID, 0, 70);
+    lv_obj_set_size(status_panel, 380, 340);
+    lv_obj_align(status_panel, LV_ALIGN_LEFT_MID, 0, 20);
     lv_obj_set_style_bg_color(status_panel, lv_color_hex(0x121829), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(status_panel, LV_OPA_90, LV_PART_MAIN);
     lv_obj_set_style_border_color(status_panel, lv_color_hex(0x00E5FF), LV_PART_MAIN);
     lv_obj_set_style_border_width(status_panel, 2, LV_PART_MAIN);
-    lv_obj_set_style_radius(status_panel, 20, LV_PART_MAIN);
+    lv_obj_set_style_radius(status_panel, 16, LV_PART_MAIN);
     lv_obj_set_style_shadow_color(status_panel, lv_color_hex(0x00E5FF), LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(status_panel, 15, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(status_panel, 12, LV_PART_MAIN);
     lv_obj_clear_flag(status_panel, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Spinner Animado para Estado "Pensando" (Inicialmente oculto)
+    // Spinner (oculto por defecto)
     ai_spinner = lv_spinner_create(status_panel);
-    lv_obj_set_size(ai_spinner, 100, 100);
-    lv_obj_align(ai_spinner, LV_ALIGN_CENTER, 0, -50);
+    lv_obj_set_size(ai_spinner, 80, 80);
+    lv_obj_align(ai_spinner, LV_ALIGN_CENTER, 0, -30);
     lv_obj_set_style_arc_color(ai_spinner, lv_color_hex(0x2E3D5C), LV_PART_MAIN);
     lv_obj_set_style_arc_color(ai_spinner, lv_color_hex(0x9D00FF), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(ai_spinner, 10, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(ai_spinner, 10, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(ai_spinner, 8, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(ai_spinner, 8, LV_PART_INDICATOR);
     lv_obj_add_flag(ai_spinner, LV_OBJ_FLAG_HIDDEN);
 
-    // Ícono de Estado en Centro del Panel
+    // Ícono de Estado
     state_icon_lbl = lv_label_create(status_panel);
-    lv_label_set_text(state_icon_lbl, "[ O READY O ]");
+    lv_label_set_text(state_icon_lbl, "[ READY ]");
     lv_obj_set_style_text_color(state_icon_lbl, lv_color_hex(0x00E5FF), LV_PART_MAIN);
     lv_obj_set_style_text_font(state_icon_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_obj_align(state_icon_lbl, LV_ALIGN_CENTER, 0, -50);
+    lv_obj_align(state_icon_lbl, LV_ALIGN_CENTER, 0, -30);
 
     // Título de Estado
     state_title_lbl = lv_label_create(status_panel);
@@ -145,68 +165,51 @@ static void build_ai_assistant_ui() {
     lv_obj_set_style_text_font(state_title_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
     lv_obj_align(state_title_lbl, LV_ALIGN_CENTER, 0, 30);
 
-    // 4. Panel Inferior para Transcripción y Respuesta AI
+    // Botón de Activación Táctil
+    btn_listen = lv_btn_create(status_panel);
+    lv_obj_set_size(btn_listen, 340, 55);
+    lv_obj_align(btn_listen, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_style_bg_color(btn_listen, lv_color_hex(0x00FF88), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(btn_listen, lv_color_hex(0x00CC6A), (lv_style_selector_t)(LV_PART_MAIN | LV_STATE_PRESSED));
+    lv_obj_set_style_radius(btn_listen, 27, LV_PART_MAIN);
+    lv_obj_set_style_shadow_color(btn_listen, lv_color_hex(0x00FF88), LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(btn_listen, 12, LV_PART_MAIN);
+
+    btn_lbl = lv_label_create(btn_listen);
+    lv_label_set_text(btn_lbl, "TOCAR PARA HABLAR");
+    lv_obj_set_style_text_color(btn_lbl, lv_color_hex(0x05131A), LV_PART_MAIN);
+    lv_obj_set_style_text_font(btn_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_center(btn_lbl);
+    lv_obj_add_event_cb(btn_listen, btn_listen_event_cb, LV_EVENT_CLICKED, NULL);
+
+    // 4. Panel de Transcripción (derecha)
     lv_obj_t* info_panel = lv_obj_create(main_container);
-    lv_obj_set_size(info_panel, 440, 200);
-    lv_obj_align(info_panel, LV_ALIGN_TOP_MID, 0, 465);
+    lv_obj_set_size(info_panel, 370, 340);
+    lv_obj_align(info_panel, LV_ALIGN_RIGHT_MID, 0, 20);
     lv_obj_set_style_bg_color(info_panel, lv_color_hex(0x161D33), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(info_panel, LV_OPA_80, LV_PART_MAIN);
     lv_obj_set_style_border_color(info_panel, lv_color_hex(0x2D3A5D), LV_PART_MAIN);
     lv_obj_set_style_border_width(info_panel, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(info_panel, 16, LV_PART_MAIN);
+    lv_obj_set_style_radius(info_panel, 14, LV_PART_MAIN);
 
     info_text_lbl = lv_label_create(info_panel);
-    lv_obj_set_width(info_text_lbl, 400);
+    lv_obj_set_width(info_text_lbl, 340);
     lv_label_set_long_mode(info_text_lbl, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(info_text_lbl, "Sistema iniciado en Core 1 con Double Buffer PSRAM a 60 FPS.\n\nPresiona el botón inferior o ingresa '1' en consola para conversar con NVIDIA Nemotron-3 y Parakeet ASR.");
+    lv_label_set_text(info_text_lbl,
+        "Sistema iniciado con Double Buffer PSRAM.\n\n"
+        "Presiona el boton o envia '1' por serie\n"
+        "para conversar con NVIDIA Nemotron-3.");
     lv_obj_set_style_text_color(info_text_lbl, lv_color_hex(0xD1D5DB), LV_PART_MAIN);
     lv_obj_set_style_text_font(info_text_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
     lv_obj_align(info_text_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    // 5. Botón de Activación Táctil (WAKE & SPEAK)
-    btn_listen = lv_btn_create(main_container);
-    lv_obj_set_size(btn_listen, 440, 70);
-    lv_obj_align(btn_listen, LV_ALIGN_BOTTOM_MID, 0, -10);
-    lv_obj_set_style_bg_color(btn_listen, lv_color_hex(0x00FF88), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(btn_listen, lv_color_hex(0x00CC6A), (lv_style_selector_t)(LV_PART_MAIN | LV_STATE_PRESSED));
-    lv_obj_set_style_radius(btn_listen, 35, LV_PART_MAIN);
-    lv_obj_set_style_shadow_color(btn_listen, lv_color_hex(0x00FF88), LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(btn_listen, 15, LV_PART_MAIN);
-
-    btn_lbl = lv_label_create(btn_listen);
-    lv_label_set_text(btn_lbl, "🎙️ TOCAR PARA HABLAR (INTERACCION)");
-    lv_obj_set_style_text_color(btn_lbl, lv_color_hex(0x05131A), LV_PART_MAIN);
-    lv_obj_set_style_text_font(btn_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_obj_center(btn_lbl);
-
-    lv_obj_add_event_cb(btn_listen, btn_listen_event_cb, LV_EVENT_CLICKED, NULL);
 }
 
-// Bucle de renderizado dedicado al Core 1
-static void uiTask(void *pvParameters) {
-    Serial.println("[Core 1] Tarea de interfaz gráfica (UI Task) en ejecución a 60 FPS...");
-    while(1) {
-        if (xGuiSemaphore != NULL && xSemaphoreTake(xGuiSemaphore, portMAX_DELAY) == pdTRUE) {
-            lv_timer_handler();
-            xSemaphoreGive(xGuiSemaphore);
-        }
-        vTaskDelay(pdMS_TO_TICKS(5)); // Ceder CPU voluntario y evitar inanición de tareas
-    }
-}
-
-// Inicialización de hardware y puerto LVGL en ESP32-P4
+// ============================================================
+// setupUIManager() — Inicialización hardware y puerto LVGL
+// ============================================================
 void setupUIManager() {
-    Serial.println("\n[UI_Manager] Inicializando hardware MIPI DSI HMI y panel táctil...");
+    Serial.println("\n[UI_Manager] Inicializando MIPI DSI HMI...");
     lcd_brightness_init();
-
-    // Crear bus maestro I2C para el Touch Panel GT911
-    i2c_master_bus_handle_t i2c_handle = NULL;
-    i2c_master_bus_config_t i2c_bus_conf = {};
-    i2c_bus_conf.clk_source = I2C_CLK_SRC_DEFAULT;
-    i2c_bus_conf.i2c_port = I2C_NUM_1;
-    i2c_bus_conf.sda_io_num = (gpio_num_t)7;
-    i2c_bus_conf.scl_io_num = (gpio_num_t)8;
-    i2c_new_master_bus(&i2c_bus_conf, &i2c_handle);
 
     // Alimentar PHY del MIPI DSI (LDO VO3 a 2500 mV)
     static esp_ldo_channel_handle_t phy_pwr_chan = NULL;
@@ -226,7 +229,7 @@ void setupUIManager() {
 
     esp_lcd_panel_handle_t disp_panel = NULL;
     esp_lcd_dpi_panel_config_t dpi_config = ST7701_480_360_PANEL_60HZ_DPI_CONFIG(LCD_COLOR_PIXEL_FORMAT_RGB565);
-    dpi_config.num_fbs = LVGL_PORT_LCD_BUFFER_NUMS; // Triple buffer (requerido por rotación 90° en pins_config.h)
+    dpi_config.num_fbs = LVGL_PORT_LCD_BUFFER_NUMS;
 
     st7701_vendor_config_t vendor_config = {};
     vendor_config.mipi_config.dsi_bus = mipi_dsi_bus;
@@ -243,49 +246,41 @@ void setupUIManager() {
     esp_lcd_panel_reset(disp_panel);
     esp_lcd_panel_init(disp_panel);
 
-    // Touch panel GT911
-    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-    esp_lcd_touch_handle_t tp_handle = NULL;
-    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
-    tp_io_config.scl_speed_hz = 100000;
-    esp_lcd_new_panel_io_i2c(i2c_handle, &tp_io_config, &tp_io_handle);
+    // ============================================================
+    // REGISTRAR CALLBACK VSYNC — ¡CRITICO!
+    // Sin esto, flush_callback se bloquea infinitamente en
+    // ulTaskNotifyTake() y la pantalla queda en blanco.
+    // ============================================================
+    esp_lcd_dpi_panel_event_callbacks_t cbs = {};
+#if LVGL_PORT_AVOID_TEAR_ENABLE
+    cbs.on_refresh_done = mipi_dsi_lcd_on_vsync_event;
+#else
+    cbs.on_color_trans_done = mipi_dsi_lcd_on_vsync_event;
+#endif
+    esp_lcd_dpi_panel_register_event_callbacks(disp_panel, &cbs, NULL);
 
-    esp_lcd_touch_config_t tp_cfg = {};
-    tp_cfg.x_max = 480;
-    tp_cfg.y_max = 800;
-    tp_cfg.rst_gpio_num = GPIO_NUM_NC;
-    tp_cfg.int_gpio_num = GPIO_NUM_NC;
-    tp_cfg.levels.reset = 0;
-    tp_cfg.levels.interrupt = 0;
-    tp_cfg.flags.swap_xy = 0;
-    tp_cfg.flags.mirror_x = 0;
-    tp_cfg.flags.mirror_y = 0;
-
-    esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, &tp_handle);
-
-    // Inicializar puerto LVGL 9 por MIPI DSI DMA
+    // Inicializar puerto LVGL 9 (crea su propia tarea y mutex internamente)
+    // Touch desactivado temporalmente (NULL) por conflicto I2C con ES8311/Wire
     lvgl_port_interface_t interface = LVGL_PORT_INTERFACE_MIPI_DSI_DMA;
-    lvgl_port_init(disp_panel, tp_handle, interface);
+    ESP_ERROR_CHECK(lvgl_port_init(disp_panel, NULL, interface));
 
-    // Crear Mutex e Inicializar Diseño Gráfico
-    xGuiSemaphore = xSemaphoreCreateMutex();
-    if (xGuiSemaphore != NULL) {
-        if (xSemaphoreTake(xGuiSemaphore, portMAX_DELAY) == pdTRUE) {
-            build_ai_assistant_ui();
-            xSemaphoreGive(xGuiSemaphore);
-        }
-        // Anclar tarea al Core 1 con pila de 32KB y prioridad 2
-        xTaskCreatePinnedToCore(uiTask, "UITask", 32768, NULL, 2, &uiTaskHandle, 1);
-        Serial.println("[UI_Manager] Motor LVGL 9 iniciado exitosamente en Core 1.");
-    } else {
-        Serial.println("[UI_Manager] ¡ERROR FATAL al crear semáforo xGuiSemaphore!");
+    // Encender retroiluminación
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH, 1023);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH);
+
+    // Construir UI usando el mutex NATIVO del puerto LVGL
+    if (lvgl_port_lock(-1)) {
+        build_ai_assistant_ui();
+        lvgl_port_unlock();
     }
+
+    Serial.println("[UI_Manager] Motor LVGL 9 iniciado exitosamente.");
 }
 
-// Función hilo-segura para cambiar estados desde cualquier tarea de Core 0 o 1
+// Función hilo-segura para cambiar estados desde Core 0
 void ui_set_state(UIState state, const char* infoText) {
-    if (xGuiSemaphore == NULL || status_panel == NULL) return;
-    if (xSemaphoreTake(xGuiSemaphore, portMAX_DELAY) == pdTRUE) {
+    if (status_panel == NULL) return;
+    if (lvgl_port_lock(100)) {  // Timeout 100ms para no bloquear el pipeline
         lv_obj_add_flag(ai_spinner, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(state_icon_lbl, LV_OBJ_FLAG_HIDDEN);
 
@@ -293,61 +288,61 @@ void ui_set_state(UIState state, const char* infoText) {
             case UI_STATE_IDLE:
                 lv_obj_set_style_border_color(status_panel, lv_color_hex(0x00E5FF), LV_PART_MAIN);
                 lv_obj_set_style_shadow_color(status_panel, lv_color_hex(0x00E5FF), LV_PART_MAIN);
-                lv_label_set_text(state_icon_lbl, "[ O READY O ]");
+                lv_label_set_text(state_icon_lbl, "[ READY ]");
                 lv_obj_set_style_text_color(state_icon_lbl, lv_color_hex(0x00E5FF), LV_PART_MAIN);
                 lv_label_set_text(state_title_lbl, "SISTEMA EN REPOSO");
                 lv_obj_set_style_bg_color(btn_listen, lv_color_hex(0x00FF88), LV_PART_MAIN);
-                lv_label_set_text(btn_lbl, "🎙️ TOCAR PARA HABLAR (INTERACCION)");
+                lv_label_set_text(btn_lbl, "TOCAR PARA HABLAR");
                 break;
             case UI_STATE_LISTENING:
                 lv_obj_set_style_border_color(status_panel, lv_color_hex(0x00FF88), LV_PART_MAIN);
                 lv_obj_set_style_shadow_color(status_panel, lv_color_hex(0x00FF88), LV_PART_MAIN);
-                lv_label_set_text(state_icon_lbl, "[[[ 🎙️ STREAMING ]]]");
+                lv_label_set_text(state_icon_lbl, ">>> STREAMING <<<");
                 lv_obj_set_style_text_color(state_icon_lbl, lv_color_hex(0x00FF88), LV_PART_MAIN);
-                lv_label_set_text(state_title_lbl, "ESCUCHANDO AUDIO I2S...");
+                lv_label_set_text(state_title_lbl, "ESCUCHANDO...");
                 lv_obj_set_style_bg_color(btn_listen, lv_color_hex(0xFFA500), LV_PART_MAIN);
-                lv_label_set_text(btn_lbl, "⏳ GRABANDO AUDIO...");
+                lv_label_set_text(btn_lbl, "GRABANDO AUDIO...");
                 break;
             case UI_STATE_THINKING:
                 lv_obj_add_flag(state_icon_lbl, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_flag(ai_spinner, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_set_style_border_color(status_panel, lv_color_hex(0x9D00FF), LV_PART_MAIN);
                 lv_obj_set_style_shadow_color(status_panel, lv_color_hex(0x9D00FF), LV_PART_MAIN);
-                lv_label_set_text(state_title_lbl, "PROCESANDO CON NEMOTRON...");
+                lv_label_set_text(state_title_lbl, "PROCESANDO...");
                 lv_obj_set_style_bg_color(btn_listen, lv_color_hex(0x9D00FF), LV_PART_MAIN);
-                lv_label_set_text(btn_lbl, "⚙️ CONECTANDO CON NUBE IA...");
+                lv_label_set_text(btn_lbl, "NUBE IA...");
                 break;
             case UI_STATE_SPEAKING:
                 lv_obj_set_style_border_color(status_panel, lv_color_hex(0xFF007F), LV_PART_MAIN);
                 lv_obj_set_style_shadow_color(status_panel, lv_color_hex(0xFF007F), LV_PART_MAIN);
-                lv_label_set_text(state_icon_lbl, "=== | ||| | ||| | ===");
+                lv_label_set_text(state_icon_lbl, "=== HABLANDO ===");
                 lv_obj_set_style_text_color(state_icon_lbl, lv_color_hex(0xFF007F), LV_PART_MAIN);
-                lv_label_set_text(state_title_lbl, "HABLANDO (MAGPIE TTS)");
+                lv_label_set_text(state_title_lbl, "MAGPIE TTS");
                 lv_obj_set_style_bg_color(btn_listen, lv_color_hex(0xFF007F), LV_PART_MAIN);
-                lv_label_set_text(btn_lbl, "🔊 REPRODUCIENDO EN ALTAVOZ...");
+                lv_label_set_text(btn_lbl, "REPRODUCIENDO...");
                 break;
         }
 
         if (infoText != NULL) {
             lv_label_set_text(info_text_lbl, infoText);
         }
-        xSemaphoreGive(xGuiSemaphore);
+        lvgl_port_unlock();
     }
 }
 
 // Actualizador de señal WiFi hilo-seguro
 void ui_update_wifi_status(bool connected, int rssi) {
-    if (xGuiSemaphore == NULL || header_wifi_lbl == NULL) return;
-    if (xSemaphoreTake(xGuiSemaphore, portMAX_DELAY) == pdTRUE) {
+    if (header_wifi_lbl == NULL) return;
+    if (lvgl_port_lock(50)) {
         char buf[32];
         if (connected) {
-            snprintf(buf, sizeof(buf), "WiFi: OK (%d dBm)", rssi);
+            snprintf(buf, sizeof(buf), "WiFi: %d dBm", rssi);
             lv_label_set_text(header_wifi_lbl, buf);
             lv_obj_set_style_text_color(header_wifi_lbl, lv_color_hex(0x00FF88), LV_PART_MAIN);
         } else {
-            lv_label_set_text(header_wifi_lbl, "WiFi: DESCONECTADO");
+            lv_label_set_text(header_wifi_lbl, "WiFi: OFF");
             lv_obj_set_style_text_color(header_wifi_lbl, lv_color_hex(0xFF3B30), LV_PART_MAIN);
         }
-        xSemaphoreGive(xGuiSemaphore);
+        lvgl_port_unlock();
     }
 }

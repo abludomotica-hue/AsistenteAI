@@ -2,11 +2,6 @@
 #define UI_MANAGER_H
 
 #include <Arduino.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-
-// Semáforo Mutex para protección concurrente inter-núcleos (Core 0 vs Core 1)
-extern SemaphoreHandle_t xGuiSemaphore;
 
 // Estados conversacionales visuales del Asistente IA HMI
 enum UIState {
@@ -17,6 +12,8 @@ enum UIState {
 };
 
 // Funciones públicas del módulo HMI
+// IMPORTANTE: Estas funciones usan internamente lvgl_port_lock()/unlock()
+// que es el mutex nativo del puerto LVGL. NO crear mutex adicionales.
 void setupUIManager();
 void ui_set_state(UIState state, const char* infoText = NULL);
 void ui_update_wifi_status(bool connected, int rssi = 0);
