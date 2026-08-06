@@ -226,7 +226,7 @@ void setupUIManager() {
 
     esp_lcd_panel_handle_t disp_panel = NULL;
     esp_lcd_dpi_panel_config_t dpi_config = ST7701_480_360_PANEL_60HZ_DPI_CONFIG(LCD_COLOR_PIXEL_FORMAT_RGB565);
-    dpi_config.num_fbs = 2; // Double buffering para 60 FPS fluidos en PSRAM
+    dpi_config.num_fbs = LVGL_PORT_LCD_BUFFER_NUMS; // Triple buffer (requerido por rotación 90° en pins_config.h)
 
     st7701_vendor_config_t vendor_config = {};
     vendor_config.mipi_config.dsi_bus = mipi_dsi_bus;
