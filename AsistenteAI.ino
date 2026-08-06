@@ -146,28 +146,28 @@ void audioTask(void *pvParameters) {
         g_metrics.pipelineStartMs = millis();
         interruptPlayback.store(false, std::memory_order_relaxed); // Reset atómico AL INICIO del pipeline
         Serial.println("\n[Core 0] Iniciando Pipeline de Asistente..."); Serial.flush();
-        ui_set_state(UI_STATE_LISTENING, "Capturando voz en micrófono I2S (Timeout inactividad: 5s)...");
+        ui_set_state(UI_STATE_LISTENING, "Capturando voz en microfono I2S (Timeout: 5s)...");
         String text = recordAndTranscribe();
         if (text.length() > 0) {
           Serial.println("[Core 0] Usuario dijo: " + text); Serial.flush();
           Serial.println("[Core 0] >>> PENSANDO (Enviando a NVIDIA)..."); Serial.flush();
-          ui_set_state(UI_STATE_THINKING, ("🗣️ Transcripción:\n\"" + text + "\"\n\n⚙️ Consultando modelo Nemotron-3 30B en nube...").c_str());
+          ui_set_state(UI_STATE_THINKING, ("[ Transcripcion ]\n\"" + text + "\"\n\n[ Estado ]\nConsultando modelo Nemotron-3 30B en nube...").c_str());
           String response = getLLMResponse(text);
           if (response.length() > 0) {
             Serial.println("[Core 0] Asistente responde: " + response); Serial.flush();
             Serial.println("[Core 0] >>> HABLANDO..."); Serial.flush();
-            ui_set_state(UI_STATE_SPEAKING, ("💬 Respuesta de Nemotron-3:\n\n" + response).c_str());
+            ui_set_state(UI_STATE_SPEAKING, ("[ Respuesta de Nemotron-3 ]\n\n" + response).c_str());
             synthesizeAndPlay(response);
           }
         } else {
             Serial.println("[Core 0] >>> SILENCIO DETECTADO (Ningún texto reconocido)."); Serial.flush();
-            ui_set_state(UI_STATE_IDLE, "Silencio detectado o captura cancelada por timeout de 5s sin voz.\n\nPresiona el botón para intentar nuevamente.");
+            ui_set_state(UI_STATE_IDLE, "Silencio detectado o captura cancelada (Timeout 5s sin voz).\n\nToca para intentar nuevamente.");
         }
         g_metrics.totalPipelineMs = millis() - g_metrics.pipelineStartMs;
         g_metrics.printReport();
         Serial.println("[Core 0] Pipeline finalizado. Volviendo a reposo."); Serial.flush();
         if (text.length() > 0) {
-            ui_set_state(UI_STATE_IDLE, ("✅ Interacción Completada en " + String(g_metrics.totalPipelineMs) + " ms\n⚡ Latencia al primer audio (TTFA): " + String(g_metrics.ttsFirstChunkMs) + " ms.\n\nToca para una nueva conversación.").c_str());
+            ui_set_state(UI_STATE_IDLE, ("[ Interaccion Completada ]\nTiempo Total: " + String(g_metrics.totalPipelineMs) + " ms\nLatencia Primer Audio: " + String(g_metrics.ttsFirstChunkMs) + " ms.\n\nToca para nueva conversacion.").c_str());
         }
       }
     }
@@ -296,6 +296,8 @@ void setupAudio() {
   // AHORA SÍ MANDAMOS LOS COMANDOS I2C
   Wire.begin(IIC_DATA, IIC_CLK, 400000);
   ES8311_Init();
+  Wire.end(); // LIBERACIÓN DE PINES I2C (Evita colisión de bus con Touch GT911 en setupUIManager)
+  Serial.println("[Audio] Codec configurado OK. Bus I2C liberado exitosamente."); Serial.flush();
   
   pinMode(PA_PIN, OUTPUT);
   digitalWrite(PA_PIN, HIGH);
