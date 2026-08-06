@@ -8,7 +8,17 @@
 #include <atomic> // (M3 / RISK-003) Concurrencia atómica entre núcleos
 
 HWCDC miPuertoUSB;
+#undef Serial
 #define Serial miPuertoUSB
+
+// ==========================================
+// CONFIGURACIÓN DE DEPURACIÓN Y LOGS (L1)
+// 0 = Producción (Arranque rápido y limpio)
+// 1 = Debug Verboso (Scans I2C/WiFi, volcado ES8311)
+// ==========================================
+#ifndef DEBUG_VERBOSE
+#define DEBUG_VERBOSE 0
+#endif
 
 #include "ES8311_Init.h"
 #include "config.h"
@@ -56,7 +66,6 @@ TaskHandle_t audioTaskHandle = NULL;
 QueueHandle_t audioCommandQueue;
 
 enum AudioCommand {
-  CMD_IDLE,
   CMD_START_PIPELINE
 };
 
@@ -240,6 +249,7 @@ void setupWiFi() {
     Serial.println("\n[WiFi] Sin conexión al arranque; auto-reconexión activa en segundo plano."); Serial.flush();
   }
 
+#if DEBUG_VERBOSE
   // SCAN DE ANTENA: Si TODAS las redes tienen RSSI < -75, la antena tiene problema
   Serial.println("\n--- SCAN REDES WiFi (Diagnóstico Antena) ---");
   int n = WiFi.scanNetworks(false, false, false, 300);  // Scan sincrónico, activo
@@ -259,6 +269,7 @@ void setupWiFi() {
   }
   WiFi.scanDelete();
   Serial.println("--- FIN SCAN ---\n"); Serial.flush();
+#endif
 }
 
 void setupAudio() {
@@ -330,14 +341,16 @@ String recordAndTranscribe() {
   uint8_t* monoBuffer = psramMonoBuffer;
   
   g_metrics.recordStartMs = millis();
-  i2s.read(); 
   size_t bytesReadTotal = 0;
-  Serial.println(">>> Capturando I2S en Estéreo (VAD activo)..."); Serial.flush();
+  Serial.println(">>> Capturando I2S en Estéreo (VAD inteligente M2)..."); Serial.flush();
   
-  const int16_t VAD_THRESHOLD = 500; // Usaremos el Pico (Max) de amplitud
-  const uint32_t SILENCE_MS_TO_STOP = 1200; 
-  const uint32_t CHUNK_SIZE = sampleRate * 4 / 10; // ~100ms in bytes (6400)
+  const int16_t VAD_THRESHOLD = 500;                // Umbral de amplitud de voz
+  const uint32_t POST_SPEECH_SILENCE_MS = 1200;     // Corte tras hablar
+  const uint32_t INITIAL_SILENCE_TIMEOUT_MS = 5000; // Timeout de inactividad inicial (M2)
+  const uint32_t CHUNK_SIZE = sampleRate * 4 / 10;  // ~100ms in bytes (6400)
+  
   uint32_t silenceMs = 0;
+  uint32_t lastChunkTimeMs = millis();
   bool userHasSpoken = false;
 
   while(bytesReadTotal < maxStereoSize) {
@@ -345,6 +358,11 @@ String recordAndTranscribe() {
     size_t bytesRead = i2s.readBytes((char*)(stereoBuffer + bytesReadTotal), bytesToRead);
     
     if (bytesRead > 0) {
+      // Medición diferencial real milisegundal (M2) en lugar de 100ms fijos
+      uint32_t now = millis();
+      uint32_t deltaMs = now - lastChunkTimeMs;
+      lastChunkTimeMs = now;
+
       // Calcular Pico Máximo del chunk (canal L)
       int16_t* pChunk = (int16_t*)(stereoBuffer + bytesReadTotal);
       uint32_t chunkSamples = bytesRead / 4; 
@@ -358,14 +376,20 @@ String recordAndTranscribe() {
         silenceMs = 0;
         userHasSpoken = true;
       } else {
-        silenceMs += 100; // Asumimos ~100ms por chunk
+        silenceMs += deltaMs;
       }
       
       bytesReadTotal += bytesRead;
       
-      // Detener si hay silencio prolongado y ya habló algo
-      if (userHasSpoken && silenceMs >= SILENCE_MS_TO_STOP) {
-        Serial.printf("\nSilencio detectado (%d ms). Deteniendo captura.\n", silenceMs);
+      // Caso 1: Detener si el usuario habló y luego hizo silencio >= 1200ms
+      if (userHasSpoken && silenceMs >= POST_SPEECH_SILENCE_MS) {
+        Serial.printf("\n[VAD] Silencio detectado tras voz (%u ms). Deteniendo captura.\n", (uint32_t)silenceMs);
+        break;
+      }
+      
+      // Caso 2: Timeout si nadie habló en los primeros 5000ms (M2)
+      if (!userHasSpoken && silenceMs >= INITIAL_SILENCE_TIMEOUT_MS) {
+        Serial.printf("\n[VAD] Timeout de inactividad inicial (%u ms sin voz). Abortando.\n", (uint32_t)silenceMs);
         break;
       }
     }
@@ -373,6 +397,12 @@ String recordAndTranscribe() {
   }
   
   Serial.printf("Grabación finalizada. Bytes leídos: %u de %u\n", bytesReadTotal, maxStereoSize); Serial.flush();
+
+  // Si se abortó por timeout inicial (no hubo voz), evitamos enviar silencio a la nube
+  if (!userHasSpoken) {
+    Serial.println(">>> Captura descartada por inactividad inicial (sin voz reconocida). Volviendo a reposo."); Serial.flush();
+    return "";
+  }
   
   // Ajustar tamaños reales
   uint32_t actualStereoSize = bytesReadTotal;
@@ -386,9 +416,8 @@ String recordAndTranscribe() {
   uint32_t numSamples = actualMonoSize / 2;
   
   for(uint32_t i=0; i<numSamples; i++) {
-      int16_t L = pStereo[i*2];
-      int16_t R = pStereo[i*2 + 1];
-      pMono[i] = (L != 0) ? L : R;
+      // Tomamos directamente el canal L (El ADC del ES8311 transmite por el slot L en I2S - L2)
+      pMono[i] = pStereo[i*2];
   }
   
   String boundary = "----NvidiaNIMBoundary123456789";
@@ -420,7 +449,7 @@ String recordAndTranscribe() {
   Serial.printf("Payload ensamblado (%u bytes). WiFi RSSI: %d dBm. Enviando POST a Debian...\n", totalLen, WiFi.RSSI()); Serial.flush();
   HTTPClient http;
   http.begin(BRIDGE_BASE_URL "/stt"); 
-  http.setTimeout(90000);  // 90s: NVIDIA NIM cold-start puede tomar 30-90s
+  http.setTimeout(60000);  // 60s (Tope máximo de uint16_t para evitar desbordamiento al compilar)
   http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
   addBridgeAuthHeader(http);
   

@@ -3,6 +3,9 @@
 
 #include <Wire.h>
 
+#ifndef DEBUG_VERBOSE
+#define DEBUG_VERBOSE 0
+#endif
 
 // Dirección I2C típica del ES8311 (7-bit)
 #define ES8311_ADDR 0x18
@@ -32,6 +35,7 @@ uint8_t es8311_read_reg(uint8_t reg) {
     return 0xFF; // Error
 }
 
+#if DEBUG_VERBOSE
 void ES8311_DumpRegs() {
     Serial.println("\n--- VOLCADO DE REGISTROS ES8311 ---");
     // Chip ID
@@ -76,8 +80,10 @@ void ES8311_DumpRegs() {
     Serial.println("--- FIN VOLCADO ---\n");
     Serial.flush();
 }
+#endif
 
 void ES8311_Init() {
+#if DEBUG_VERBOSE
     Serial.println("\n--- ESCÁNER I2C (Buscando Codec) ---"); Serial.flush();
     bool found = false;
     for(byte address = 1; address < 127; address++ ) {
@@ -91,6 +97,7 @@ void ES8311_Init() {
         Serial.println("[I2C] ¡NO SE ENCONTRARON DISPOSITIVOS I2C!"); Serial.flush();
     }
     Serial.println("------------------------------------\n"); Serial.flush();
+#endif
 
     Serial.println("[ES8311] Inicializando codec (secuencia ESP-ADF completa)..."); Serial.flush();
 
@@ -147,8 +154,12 @@ void ES8311_Init() {
     es8311_write_reg(0x37, 0x48); // DAC ramp rate
     es8311_write_reg(0x45, 0x00); // GP CONTROL
     
+#if DEBUG_VERBOSE
     Serial.println("[ES8311] Init completo. Volcando registros..."); Serial.flush();
     ES8311_DumpRegs();
+#else
+    Serial.println("[ES8311] Init completo y equilibrado (PA/DAC calibrados)."); Serial.flush();
+#endif
 }
 
 #endif

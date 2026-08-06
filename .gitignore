@@ -6,6 +6,8 @@ bridge.env
 .env
 *.env.local
 DOCUMENT/API_nvidia.txt
+DOCUMENT/github.md
+
 
 # ============================================
 # Herramientas y binarios grandes

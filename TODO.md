@@ -35,21 +35,17 @@
 ## 🟡 MEDIUM
 
 - [x] **M1.** ~~Buffers de audio estáticos en PSRAM~~ ✅ (4/Ago): Asignación estática de ~1.9 MB al arranque en `setupAudio()` (`psramStereoBuffer`, `psramMonoBuffer`, `psramPayloadBuffer`), eliminando por completo los ciclos `malloc`/`free` por interacción y previniendo la fragmentación de PSRAM (Mitigación RISK-001).
-- [ ] **M2.** VAD: timeout inicial si nadie habla (ej. 5 s; hoy graba los 15 s completos) y
-      medición real de ms por chunk en vez de asumir 100 ms fijos.
+- [x] **M2.** ~~VAD: timeout inicial si nadie habla y medición real de ms por chunk~~ ✅ (5/Ago): Implementado timeout temprano `INITIAL_SILENCE_TIMEOUT_MS` (5000 ms) al iniciar la escucha; si el usuario no emite voz, la captura aborta de inmediato y regresa a reposo sin enviar el payload en blanco por red. Medición milisegundal real de cada chunk calculada diferencialmente con `millis()`.
 - [x] **M3.** ~~Debounce del disparador '1' y drenado de la queue~~ ✅ (4/Ago): Implementada protección de concurrencia inter-núcleos mediante `std::atomic<bool>` para el barge-in (Mitigación RISK-003), temporizador de debounce por software de 300 ms en `loop()`, y drenado de cola con `xQueueReset` en `audioTask` al arrancar el pipeline para impedir cascadas por inundación de eventos (Mitigación RISK-004).
 - [x] **M4.** ~~Instrumentar latencia por etapa~~ ✅ (4/Ago): Implementado sistema de telemetría sin consumo de heap (`PipelineMetrics` / semilla de *Diagnostics Service*) con reporte en milisegundos para Captura/Downmix, STT Parakeet, LLM Nemotron, y Time-to-First-Audio (TTFA) de Magpie TTS, resolviendo el prerrequisito para atacar el objetivo < 3s (Mitigación RISK-002).
 - [ ] **M5.** Corregir bug en `deploy_bridge_v2.py:157` (`f.read()` llamado dos veces; la
       segunda devuelve vacío) y eliminar `existing_env` muerto.
-- [ ] **M6.** Actualizar `DOCUMENT/project_status.md` al estado real (la refactorización
-      FreeRTOS ya está hecha).
+- [x] **M6.** ~~Actualizar `DOCUMENT/project_status.md` al estado real~~ ✅ (5/Ago): Sincronizado integralmente al estatus real de Fase 2 completada e inaugurando la documentación maestra en el `README.md` del repositorio.
 
 ## 🟢 LOW
 
-- [ ] **L1.** Mover diagnósticos de boot (I2C scanner, `ES8311_DumpRegs()`) detrás de un flag
-      `DEBUG` (AVANCE los marca como eliminados pero siguen presentes).
-- [ ] **L2.** Eliminar código muerto restante: `CMD_IDLE` sin uso, `i2s.read()` suelto
-      (AsistenteAI.ino:188), simplificar downmix `(L != 0) ? L : R`.
+- [x] **L1.** ~~Mover diagnósticos de boot detrás de un flag DEBUG~~ ✅ (5/Ago): Integrada directiva `#define DEBUG_VERBOSE 0` para encapsular el escáner I2C, el volcado de registros `ES8311_DumpRegs()`, y el escaneado activo de canales WiFi, ahorrando tiempo de arranque en producción.
+- [x] **L2.** ~~Eliminar código muerto restante~~ ✅ (5/Ago): Retirado el valor sin uso `CMD_IDLE` de `AudioCommand`, borrado el comando obsoleto `i2s.read()` en el bucle I2S de captura, y simplificada la conversión DSP en el downmix para tomar de forma directa el canal izquierdo analógico (`pMono[i] = pStereo[i*2]`) eliminando ramificaciones condicionales.
 - [ ] **L3.** Documentar decisiones ya tomadas como ADRs:
       - ADR-001: HTTP/1.0 forzado en TTS para evitar corrupción por chunked encoding.
       - ADR-002: HPF del ADC (regs 0x1B/0x1C) obligatorio para eliminar DC del Mic Bias.

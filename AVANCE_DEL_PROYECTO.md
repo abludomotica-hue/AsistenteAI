@@ -44,8 +44,8 @@ Altavoz ← ES8311 (DAC 0x80)  ← ESP32-P4 ← WiFi (15 dBm) ← Debian Bridge 
 
 ### 4. Pipeline de Audio y Telemetría de Alta Precisión
 - [x] I2S inicializado a 16kHz, 16-bit, Estéreo con MCLK en GPIO 13
-- [x] Captura con algoritmo VAD por energía en tiempo real (corte automático tras 1200 ms de silencio)
-- [x] Downmix por software de Estéreo a Mono con inyección de cabeceras WAV
+- [x] Captura con algoritmo VAD por energía en tiempo real (corte tras 1200 ms de silencio y **timeout de inactividad de 5000 ms** sin voz, M2)
+- [x] Downmix por software de Estéreo a Mono sin ramificaciones condicionales con inyección de cabeceras WAV (L2)
 - [x] Reproducción de respuesta TTS en RAW LINEAR PCM por streaming en chunks con conversión Mono→Estéreo en caliente
 - [x] **Telemetría y Latencia Percibida (M4):** Medición por milisegundo reportada por consola. Latencia percibida de usuario (*Time-to-First-Audio* / TTFA) certificada en **~2.15 segundos**, con reproducción de audio continua demostrada por más de 18 segundos sin interrupciones.
 
@@ -60,6 +60,10 @@ Altavoz ← ES8311 (DAC 0x80)  ← ESP32-P4 ← WiFi (15 dBm) ← Debian Bridge 
 ---
 
 ## Bitácora de Sesiones
+
+### 📅 5 de Agosto de 2026 (Sesión 2) — Saneamiento de Firmware, VAD Inteligente y Optimización DSP
+- **VAD con Timeout Temprano de Inactividad (M2):** Implementado aborto instantáneo de captura tras 5000 ms si el usuario activa el micrófono pero no emite voz; elimina transmisiones innecesarias de silencio a la nube y previene alucinaciones de ASR de Parakeet. Medición real por milisegundos usando `millis()`.
+- **Modo de Producción Limpio (L1/L2):** Sellados todos los escaneos pesados de arranque (redes WiFi activas, escáner I2C y volcado de registros de ES8311) tras la directiva `DEBUG_VERBOSE 0`. Eliminado el código muerto (`CMD_IDLE`, lecturas flotantes en I2S) y optimizado el bucle caliente DSP para downmix lineal direct-to-left sin bifurcaciones condicionales.
 
 ### 📅 5 de Agosto de 2026 — Estabilización Eléctrica, Desbloqueo del Altavoz y Consagración E2E
 
