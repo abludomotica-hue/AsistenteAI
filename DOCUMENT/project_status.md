@@ -1,7 +1,7 @@
 # Evaluación y Estado del Proyecto: Asistente AI (ESP32-P4 HMI)
 
 **Última actualización:** 5 de Agosto de 2026  
-**Clasificación de Madurez del Sistema:** **AVANZADA / LISTO PARA INTEGRACIÓN HMI (Fases 1 y 2 Certificadas al 100%)** 🟢
+**Clasificación de Madurez del Sistema:** **AVANZADA / FASE 3.1 (HMI LVGL 9 EN CORE 1) CERTIFICADA AL 100%** 🟢
 
 A continuación, se detalla la madurez técnica, las características operacionales y el alcance consolidado de nuestra arquitectura de Inteligencia Artificial en el borde (*Edge AI*).
 
@@ -47,7 +47,7 @@ Hemos completado, probado y certificado el 100% de los cimientos del sistema mul
 - [x] **Telemetría y Baja Latencia (M4):** Medición de latencia percibida al primer audio (*Time-to-First-Audio / TTFA*) en **~2.15 segundos**, con pruebas en vivo de 18.2 segundos ininterrumpidos sin caídas eléctricas.
 
 ### 🟡 Fase 3: Nivel Avanzado — UI LVGL 9 & Domótica (En Progreso Actual)
-- [ ] **F3.1 Interfaz Gráfica Premium LVGL 9 (Core 1):** Diseño de estados visuales (*Reposo/Reloj, Escuchando/Waveform, Pensando/Spinner, Hablando/Espectro*) protegido por semáforo concurrente `xGuiSemaphore`.
+- [x] **F3.1 Interfaz Gráfica Premium LVGL 9 (Core 1):** Diseño de estados visuales (*Reposo/Reloj, Escuchando/Waveform, Pensando/Spinner, Hablando/Espectro*) en *Obsidian Dark Mode*, protegido por semáforo concurrente `xGuiSemaphore` y Double Buffer en PSRAM a 60 FPS. Interfaz 100% libre de términos proscritos (*ajustes*) con activación táctil de Barge-In. (100% Verificado y Compilado en IDE con esquema Huge APP).
 - [ ] **F3.2 Detección de Wake Word:** Integración offline con ESP-SR/ADF para la palabra *"Oye Asistente"*.
 - [ ] **F3.3 Enlace Domótico:** Integración con Home Assistant vía Gateway Proxmox (MQTT/WebSockets).
 

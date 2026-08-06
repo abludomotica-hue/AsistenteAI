@@ -6,6 +6,7 @@
 #include <ESP_I2S.h>
 #include <HWCDC.h>
 #include <atomic> // (M3 / RISK-003) Concurrencia atómica entre núcleos
+#include "UI_Manager.h" // (F3.1) Motor HMI LVGL 9 en Core 1
 
 HWCDC miPuertoUSB;
 #undef Serial
@@ -145,22 +146,29 @@ void audioTask(void *pvParameters) {
         g_metrics.pipelineStartMs = millis();
         interruptPlayback.store(false, std::memory_order_relaxed); // Reset atómico AL INICIO del pipeline
         Serial.println("\n[Core 0] Iniciando Pipeline de Asistente..."); Serial.flush();
+        ui_set_state(UI_STATE_LISTENING, "Capturando voz en micrófono I2S (Timeout inactividad: 5s)...");
         String text = recordAndTranscribe();
         if (text.length() > 0) {
           Serial.println("[Core 0] Usuario dijo: " + text); Serial.flush();
           Serial.println("[Core 0] >>> PENSANDO (Enviando a NVIDIA)..."); Serial.flush();
+          ui_set_state(UI_STATE_THINKING, ("🗣️ Transcripción:\n\"" + text + "\"\n\n⚙️ Consultando modelo Nemotron-3 30B en nube...").c_str());
           String response = getLLMResponse(text);
           if (response.length() > 0) {
             Serial.println("[Core 0] Asistente responde: " + response); Serial.flush();
             Serial.println("[Core 0] >>> HABLANDO..."); Serial.flush();
+            ui_set_state(UI_STATE_SPEAKING, ("💬 Respuesta de Nemotron-3:\n\n" + response).c_str());
             synthesizeAndPlay(response);
           }
         } else {
             Serial.println("[Core 0] >>> SILENCIO DETECTADO (Ningún texto reconocido)."); Serial.flush();
+            ui_set_state(UI_STATE_IDLE, "Silencio detectado o captura cancelada por timeout de 5s sin voz.\n\nPresiona el botón para intentar nuevamente.");
         }
         g_metrics.totalPipelineMs = millis() - g_metrics.pipelineStartMs;
         g_metrics.printReport();
         Serial.println("[Core 0] Pipeline finalizado. Volviendo a reposo."); Serial.flush();
+        if (text.length() > 0) {
+            ui_set_state(UI_STATE_IDLE, ("✅ Interacción Completada en " + String(g_metrics.totalPipelineMs) + " ms\n⚡ Latencia al primer audio (TTFA): " + String(g_metrics.ttsFirstChunkMs) + " ms.\n\nToca para una nueva conversación.").c_str());
+        }
       }
     }
   }
@@ -177,6 +185,8 @@ void setup() {
   
   setupWiFi();
   setupAudio();
+  setupUIManager(); // (F3.1) Inicializar pantalla MIPI DSI, Touch y LVGL 9 en Core 1
+  ui_update_wifi_status(WiFi.status() == WL_CONNECTED, WiFi.RSSI());
   
   audioCommandQueue = xQueueCreate(5, sizeof(AudioCommand));
   
