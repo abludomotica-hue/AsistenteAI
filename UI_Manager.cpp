@@ -120,6 +120,19 @@ IRAM_ATTR static bool mipi_dsi_lcd_on_vsync_event(
     return lvgl_port_notify_lcd_vsync();
 }
 
+// ============================================================
+// SENSOR GLOBAL DE DEPURACIÓN TÁCTIL (Calibración Física)
+// ============================================================
+static void screen_touch_debug_cb(lv_event_t *e) {
+    lv_indev_t * indev = lv_indev_active();
+    if(indev) {
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        Serial.printf("\n[Touch Debug] X: %d, Y: %d\n", p.x, p.y);
+        Serial.flush();
+    }
+}
+
 // Callback de botón táctil en pantalla
 static void btn_listen_event_cb(lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
@@ -140,6 +153,9 @@ static void build_ai_assistant_ui() {
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x070B14), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Inyectar el sensor global de coordenadas táctiles en el fondo
+    lv_obj_add_event_cb(scr, screen_touch_debug_cb, LV_EVENT_PRESSED, NULL);
 
     // 2. Barra Superior (Header - 760x44)
     lv_obj_t* header = lv_obj_create(scr);
@@ -318,15 +334,15 @@ void setupUIManager() {
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_handle, &tp_io_config, &tp_io_handle));
 
     esp_lcd_touch_config_t tp_cfg = {};
-    tp_cfg.x_max = 480;
-    tp_cfg.y_max = 800;
+    tp_cfg.x_max = 800; // Asignar máxima resolución a Landscape
+    tp_cfg.y_max = 480; 
     tp_cfg.rst_gpio_num = GPIO_NUM_NC;
     tp_cfg.int_gpio_num = GPIO_NUM_NC;
     tp_cfg.levels.reset = 0;
     tp_cfg.levels.interrupt = 0;
-    // Rotación 90° (Landscape) para alinear matriz física GT911 con LCD 800x480
-    tp_cfg.flags.swap_xy = 1;
-    tp_cfg.flags.mirror_x = 1;
+    // Reseteamos a 0 temporalmente para leer la matriz pura del fabricante
+    tp_cfg.flags.swap_xy = 0;
+    tp_cfg.flags.mirror_x = 0;
     tp_cfg.flags.mirror_y = 0;
 
     ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, &tp_handle));
@@ -336,15 +352,19 @@ void setupUIManager() {
     lvgl_port_interface_t interface = LVGL_PORT_INTERFACE_MIPI_DSI_DMA;
     ESP_ERROR_CHECK(lvgl_port_init(disp_panel, tp_handle, interface));
 
-    // Encender retroiluminación LCD
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH, 1023);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH);
-
     // Construir UI usando el mutex NATIVO del puerto LVGL
     if (lvgl_port_lock(-1)) {
         build_ai_assistant_ui();
+        lv_obj_invalidate(lv_scr_act()); // Invalidar para sincronizar los 3 buffers DMA
         lvgl_port_unlock();
     }
+
+    // Retraso estratégico: Esperar a que LVGL despache el primer fotograma 100% oscuro
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    // Encender retroiluminación LCD (El usuario nunca verá la pantalla en blanco)
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH, 1023);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH);
 
     Serial.println("[UI_Manager] Motor LVGL 9 iniciado exitosamente en Core 1.");
 }
