@@ -176,6 +176,7 @@ static void build_ai_assistant_ui() {
     lv_obj_set_style_shadow_color(status_panel, lv_color_hex(0x00E5FF), LV_PART_MAIN);
     lv_obj_set_style_shadow_width(status_panel, 15, LV_PART_MAIN);
     lv_obj_clear_flag(status_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(status_panel, LV_OBJ_FLAG_CLICKABLE); // Evitar animaciones erráticas al tacto
 
     // Spinner (oculto por defecto)
     ai_spinner = lv_spinner_create(status_panel);
@@ -226,9 +227,10 @@ static void build_ai_assistant_ui() {
     lv_obj_set_style_bg_opa(info_panel, LV_OPA_80, LV_PART_MAIN);
     lv_obj_set_style_border_color(info_panel, lv_color_hex(0x23314D), LV_PART_MAIN);
     lv_obj_set_style_border_width(info_panel, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(info_panel, 16, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(info_panel, 18, LV_PART_MAIN);
     lv_obj_set_scroll_dir(info_panel, LV_DIR_VER);
+    lv_obj_clear_flag(info_panel, LV_OBJ_FLAG_CLICKABLE); // Bloquear clics fantasmas
+    lv_obj_clear_flag(info_panel, LV_OBJ_FLAG_SCROLL_ELASTIC); // Prevenir rebote/strobe blanco
+    lv_obj_remove_style(info_panel, NULL, LV_PART_SCROLLBAR); // Ocultar barras
 
     info_text_lbl = lv_label_create(info_panel);
     lv_obj_set_width(info_text_lbl, 330);
@@ -322,8 +324,9 @@ void setupUIManager() {
     tp_cfg.int_gpio_num = GPIO_NUM_NC;
     tp_cfg.levels.reset = 0;
     tp_cfg.levels.interrupt = 0;
-    tp_cfg.flags.swap_xy = 0;
-    tp_cfg.flags.mirror_x = 0;
+    // Rotación 90° (Landscape) para alinear matriz física GT911 con LCD 800x480
+    tp_cfg.flags.swap_xy = 1;
+    tp_cfg.flags.mirror_x = 1;
     tp_cfg.flags.mirror_y = 0;
 
     ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, &tp_handle));
@@ -396,6 +399,12 @@ void ui_set_state(UIState state, const char* infoText) {
             String clean = clean_utf8_for_lvgl(infoText);
             lv_label_set_text(info_text_lbl, clean.c_str());
         }
+        
+        // SINCRONIZACIÓN DE TRIPLE BUFFER: 
+        // Fuerza a redibujar toda la pantalla para que los 3 frames DMA de la PSRAM 
+        // contengan el fondo Obsidian Dark, eliminando la aparición de fondos blancos `0xFF`.
+        lv_obj_invalidate(lv_scr_act());
+        
         lvgl_port_unlock();
     }
 }
