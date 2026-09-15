@@ -298,6 +298,18 @@ flowchart TD
 
 ---
 
+### ADR-014: Infraestructura XRDP y Redirección de Audio PipeWire hacia Windows
+- **Fecha:** 2026-09-15
+- **Contexto:** `gnome-remote-desktop` sufría desconexiones frecuentes por fallos de traspaso (*handover*) en sesiones headless con GPU NVIDIA Passthrough. Además, no existía redirección de audio hacia el cliente de Escritorio Remoto de Windows (`mstsc`), impidiendo escuchar videos de YouTube o multimedia en el navegador.
+- **Decisión:** 
+  1. Reemplazar `gnome-remote-desktop` por **XRDP + xorgxrdp** como demonio de sistema autónomo en el puerto 3389.
+  2. Implementar **`pipewire-module-xrdp`** con servicio persistente `systemd --user` (`pipewire-xrdp-sink.service`) que expone el sumidero de audio virtual `xrdp-sink`.
+  3. Automatizar la exportación de sockets de audio en `/etc/xrdp/startwm.sh` para cada nueva conexión entrante.
+  4. Corregir sintaxis de `PATH` en `/etc/profile.d/nodejs.sh` y fijar política de autoconexión infinita DHCP en `ens18` con NetworkManager.
+- **Consecuencias:** Escritorio remoto 100% fluido y estable. Audio de Google Chrome / YouTube transmitido en tiempo real en estéreo (44.1 kHz, s16le) hacia los altavoces de la PC con Windows. Cero sobrecarga en CPU/RAM (~1.8 MB adicionales).
+
+---
+
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
 
 ```
