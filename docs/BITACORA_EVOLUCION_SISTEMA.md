@@ -256,6 +256,11 @@ flowchart TD
   3. Crear unidad de control a nivel de sistema `/etc/systemd/system/openclaw.service` y wrapper `/usr/local/bin/openclaw-service` para administración transparente tanto desde `systemctl` como desde el CLI `openclaw daemon`.
 - **Consecuencias:** Servicio 100% resiliente y permanente consumiendo solo 313 MB de RAM, accesible desde cualquier navegador en la LAN en el puerto 18789 con autenticación por token seguro.
 
+### ADR-010: Habilitación de Servidor RDP Nativo (gnome-remote-desktop) para Conexión desde Windows
+- **Contexto:** Necesidad de acceder al entorno de escritorio gráfico GNOME 48 desde computadoras con Windows en la red local sin instalar software de terceros ni clientes pesados.
+- **Decisión:** Habilitar el subsistema nativo `gnome-remote-desktop` mediante `grdctl`, aprovisionando certificados TLS RSA-2048 de 10 años de validez (`/home/ablutech/.local/share/gnome-remote-desktop/`), deshabilitando el modo de solo lectura (`disable-view-only`), configurando credenciales de usuario y desactivando las políticas de suspensión de energía en la VM (`sleep-inactive-ac-type: 'nothing'`).
+- **Consecuencias:** Acceso gráfico directo y de baja latencia mediante `mstsc.exe` en Windows a través del puerto TCP 3389, soporte completo para portapapeles bidireccional y pantalla completa con aceleración gráfica por hardware. Consumo de RAM de solo 17.2 MB para el servicio RDP.
+
 ---
 
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
