@@ -248,6 +248,14 @@ flowchart TD
 - **Decisión:** Instalar Node.js v24.21.0 y el prefijo de paquetes globales de npm directamente dentro de `/data` (`/data/nodejs` y `/data/npm-global`), enlazando el directorio de estado `~/.openclaw` hacia `/data/.openclaw`.
 - **Consecuencias:** Consumo nulo en la partición `/dev/sda2`, acceso universal al comando `openclaw` y disponibilidad de 48 GB para agentes, herramientas y canales de mensajería.
 
+### ADR-009: Daemon Permanente systemd para OpenClaw con Linger y Enlace LAN
+- **Contexto:** Los servicios de usuario en Linux (`systemctl --user`) terminan automáticamente al cerrar la sesión SSH si no se activa persistencia. Además, el Gateway WebSocket de OpenClaw vincula por defecto a loopback (`127.0.0.1`), impidiendo el acceso a la interfaz web de control desde otras computadoras de la red local.
+- **Decisión:** 
+  1. Habilitar persistencia de demonios de usuario con `loginctl enable-linger ablutech`, garantizando ejecución 24/7 y arranque automático post-boot sin sesiones interactivas.
+  2. Configurar el Gateway en modo LAN (`gateway.bind: "lan"` escuchando en `0.0.0.0:18789`).
+  3. Crear unidad de control a nivel de sistema `/etc/systemd/system/openclaw.service` y wrapper `/usr/local/bin/openclaw-service` para administración transparente tanto desde `systemctl` como desde el CLI `openclaw daemon`.
+- **Consecuencias:** Servicio 100% resiliente y permanente consumiendo solo 313 MB de RAM, accesible desde cualquier navegador en la LAN en el puerto 18789 con autenticación por token seguro.
+
 ---
 
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
