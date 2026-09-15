@@ -31,6 +31,7 @@
 #include "pins_config.h"
 #include "UI_Manager.h"
 #include "OTA_Manager.h"
+#include "esp_ota_ops.h"
 #include <atomic>
 #include <string>
 
@@ -161,6 +162,21 @@ extern "C" void app_main(void) {
     // 5. Inicializar Audio Manager y Colas
     audioCommandQueue = xQueueCreate(5, sizeof(AudioCommand));
     audio_manager_init();
+
+    // 6. Validación y consolidación de partición OTA (Rollback seguro)
+    const esp_partition_t *running_partition = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    if (esp_ota_get_state_partition(running_partition, &ota_state) == ESP_OK) {
+        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+            ESP_LOGI(TAG, "Firmware recién flasheado por OTA detectado. Confirmando estabilidad...");
+            esp_err_t ota_mark_err = esp_ota_mark_app_valid_cancel_rollback();
+            if (ota_mark_err == ESP_OK) {
+                ESP_LOGI(TAG, "¡Nuevo firmware validado exitosamente! Rollback cancelado.");
+            } else {
+                ESP_LOGE(TAG, "Error validando partición OTA: %s", esp_err_to_name(ota_mark_err));
+            }
+        }
+    }
 
     ESP_LOGI(TAG, "Asistente Inicializado y Operativo.");
 

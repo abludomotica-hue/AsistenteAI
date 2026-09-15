@@ -77,3 +77,6 @@ CONFIG_DSP_OPTIMIZED=y
 # ESP-SR / WakeNet 9 (Wake Word Offline para ESP32-P4)
 CONFIG_SR_WN_WN9_HIESP=y
 CONFIG_SR_MODEL_IN_FLASH=y
+
+# Soporte de Rollback seguro para particionado OTA A/B
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

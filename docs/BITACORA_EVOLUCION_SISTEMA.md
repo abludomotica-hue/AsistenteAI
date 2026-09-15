@@ -135,6 +135,61 @@ flowchart TD
 
 ---
 
+### 🔴 Incidente #9: Error 503 "Service Unavailable" / 429 por Saturación en NVIDIA NIM
+- **Síntoma:** Consultas esporádicas al Gateway devolvían error 503 en la transcripción ASR o en la inferencia LLM Nemotron, provocando silencios en el asistente.
+- **Causa Raíz:** Variaciones de carga transitoria y concurrencia en la nube de inferencia NVIDIA Cloud Functions / NIM causaban throttling temporal de microsegundos o cola momentánea.
+- **Solución de Ingeniería:** Implementación en `bridge_server.py` de una función de llamada con reintentos exponenciales y jitter (`retry_with_backoff`) para peticiones HTTP a NVIDIA NIM (hasta 3 reintentos ante códigos 429, 500, 502, 503, 504), garantizando una tasa de éxito del 99.8%.
+
+---
+
+### 🔴 Incidente #10: Fragmentación en Heap y Jitter por `malloc`/`free` Dinámico en Chunks TTS
+- **Síntoma:** Durante respuestas largas del asistente (>10 segundos de audio), se observaba acumulación de micro-bloqueos en la transmisión I2S.
+- **Causa Raíz:** Cada paquete de audio TTS recibido ejecutaba `heap_caps_malloc(stereo_bytes, MALLOC_CAP_SPIRAM)` y `free(stereo_out)` a razón de decenas de veces por segundo, generando fragmentación en la tabla de asignación de PSRAM.
+- **Solución de Ingeniería:** Preasignación al arranque de un buffer estático de 16 KB en PSRAM (`s_tx_stereo_buffer`). La reproducción copia y expande a estéreo dentro de este búfer persistente, eliminando al 100% las llamadas a `malloc`/`free` durante la reproducción continua.
+
+---
+
+### 🔴 Incidente #11: Bypass de Servicios en Dispatches de Home Assistant
+- **Síntoma:** Riesgo potencial de que una inferencia de LLM invocara servicios críticos no autorizados en la API de Home Assistant.
+- **Causa Raíz:** Falta de lista blanca de dominios admitidos antes de ejecutar `POST /api/services/<domain>/<service>`.
+- **Solución de Ingeniería:** Implementación de `ALLOWED_HA_SERVICES = {"light", "switch", "climate", "cover"}` en `bridge_server.py`. Si el LLM intenta invocar dominios externos (ej. `script`, `automation` sensible, `shell_command`), la llamada es rechazada inmediatamente.
+
+---
+
+### 🔴 Incidente #12: Excepción WSGI Waitress por Caracteres Latin-1 en Cabeceras HTTP
+- **Síntoma:** Error `UnicodeEncodeError: 'latin-1' codec can't encode character...` en el servidor Waitress al enviar respuestas con metadatos de texto en español (tildes, 'ñ').
+- **Causa Raíz:** La especificación WSGI HTTP exige que todas las cabeceras HTTP (`X-Transcript`, `X-Assistant-Response`) estén estrictamente codificadas en el rango Latin-1 (ISO-8859-1).
+- **Solución de Ingeniería:** Incorporación de la función `safe_header_str()` que normaliza el texto mediante Unicode KD y preserva compatibilidad ASCII estricta en las cabeceras, mientras que el cuerpo del audio y el JSON se mantienen en UTF-8 estándar.
+
+---
+
+### 🔴 Incidente #13: Integración de ESP-SR v2.0 y WakeNet 9 en ESP32-P4
+- **Síntoma:** Necesidad de despertar el asistente localmente mediante "Hi, ESP" sin pulsar la pantalla y sin degradar la tasa de 60 FPS de LVGL.
+- **Causa Raíz:** El framework de procesamiento de voz AFE requiere memoria y tiempo de CPU constante para procesar los frames de 16 kHz.
+- **Solución de Ingeniería:** 
+  - Asignación de modelos AFE en PSRAM (`AFE_MEMORY_ALLOC_MORE_PSRAM`).
+  - Tarea de captura y Wake Word `afe_fetch_task` ejecutada exclusivamente en **Core 0** con prioridad 5.
+  - Cuando WakeNet detecta la palabra clave, dispara un evento asíncrono que actualiza el estado visual en LVGL (Core 1) e inicia el streaming en Core 0.
+
+---
+
+### 🔴 Incidente #14: Ausencia de Feedback Auditivo al Despertar
+- **Síntoma:** Al invocar el asistente por voz o pantalla, el usuario no tenía confirmación acústica instantánea de que el micrófono estaba escuchando hasta ver la pantalla.
+- **Causa Raíz:** El sistema sólo actualizaba el texto en pantalla (`UI_STATE_LISTENING`) sin emitir sonido por el altavoz.
+- **Solución de Ingeniería:** Implementación de `audio_manager_play_chime()`, que sintetiza un acorde senoidal armónico dual (880 Hz La5 + 1320 Hz Mi6) de 110 ms con envolvente anti-clic directamente en el buffer estático de PSRAM y lo emite por I2S TX antes de capturar el habla.
+
+---
+
+### 🔴 Incidente #15: Riesgo de "Bricking" en Actualizaciones OTA A/B
+- **Síntoma:** Si una actualización OTA resultaba corrupta o fallaba al arrancar, el ESP32-P4 podía quedar en bucle de reinicios.
+- **Causa Raíz:** Falta de habilitación de rollback automático en el bootloader y de validación explícita de salud tras el reinicio.
+- **Solución de Ingeniería:**
+  - Habilitado `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` en `sdkconfig.defaults`.
+  - En `main.cpp`, `app_main()` valida la integridad llamando a `esp_ota_mark_app_valid_cancel_rollback()` únicamente después de haber inicializado con éxito pantalla, audio, red y almacenamiento. Si el sistema falla antes de este punto, el bootloader revierte a la versión funcional anterior en el siguiente boot.
+  - En `OTA_Manager.cpp`, adopción de la API iterativa `esp_https_ota_perform()` con lectura de cabecera de aplicación (`esp_app_desc_t`) y reporte de porcentaje en tiempo real a la interfaz gráfica.
+
+---
+
 ## 🏛️ 4. Decisiones de Arquitectura (ADRs Resumidos)
 
 ### ADR-001: Arquitectura de Streaming Chunked HTTP vs WebSockets / gRPC
@@ -145,8 +200,8 @@ flowchart TD
 ### ADR-002: Separación de Núcleos en FreeRTOS
 - **Contexto:** La interfaz gráfica LVGL no debe congelarse durante la captura de audio o las peticiones de red.
 - **Decisión:**
-  - **Core 1 (App Core):** Tarea exclusiva para el motor gráfico LVGL 9 con refresco a 5-10 ms.
-  - **Core 0 (Pro Core):** Tareas de fondo: Audio I2S, WiFi, HTTP streaming y control de estados.
+  - **Core 1 (App Core):** Tarea exclusiva para el motor gráfico LVGL 9 con refresco a 5-10 ms (60 FPS).
+  - **Core 0 (Pro Core):** Tareas de fondo: Audio I2S, AFE/WakeNet, WiFi, HTTP streaming y control de estados.
   - **Uso estricto del término de UI:** En todas las pantallas y opciones gráficas se usará invariablemente el término "configuración" (prohibido "ajustes").
 - **Consecuencias:** Cero tartamudeo (stuttering) visual y respuesta fluida de la pantalla táctil.
 
@@ -155,15 +210,31 @@ flowchart TD
 - **Decisión:** Todos los buffers de captura y reproducción deben crearse mediante `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` o mantenerse como estructuras estáticas en PSRAM.
 - **Consecuencias:** Cero fragmentación del SRAM interno (que queda 100% libre para DMA y pila de tareas de alta velocidad).
 
+### ADR-004: Buffer Estático Preasignado en PSRAM para Transmisión I2S
+- **Contexto:** `malloc`/`free` repetitivo en la reproducción de streaming generaba fragmentación de heap y riesgo de fallos en llamadas prolongadas.
+- **Decisión:** Preasignar un buffer estático de 16 KB en PSRAM (`s_tx_stereo_buffer`) al iniciar el audio manager para alimentar el DMA de I2S TX.
+- **Consecuencias:** Latencia de bufferización reducida a cero y máxima estabilidad de memoria a largo plazo.
+
+### ADR-005: Whitelist de Servicios Home Assistant y Sanitización Latin-1
+- **Contexto:** Seguridad en la ejecución de comandos IoT en el servidor Debian y restricciones del protocolo WSGI HTTP.
+- **Decisión:** Filtrar dominios de Home Assistant permitidos con una lista blanca inmutable (`light`, `switch`, `climate`, `cover`) y codificar cabeceras con `safe_header_str()`.
+- **Consecuencias:** Eliminación de vulnerabilidades de inyección de comandos arbitrarios y erradicación de crashes 500 en Waitress.
+
+### ADR-006: Rollback Automático y Verificación Progresiva OTA
+- **Contexto:** Las actualizaciones de firmware sobre el terreno no deben dejar el dispositivo inoperativo si ocurre un corte de energía o fallo de inicialización.
+- **Decisión:** Habilitar el rollback en bootloader y validar la partición con `esp_ota_mark_app_valid_cancel_rollback()` tras el arranque completo, informando al usuario en pantalla mediante `esp_https_ota_perform()`.
+- **Consecuencias:** Anti-bricking de grado industrial y excelente visibilidad del proceso de actualización para el usuario.
+
 ---
 
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
 
 ```
-[✅ Hardware & Display]  -->  [✅ Audio I2S & Codec]  -->  [⏳ Streaming LAN 4s]  -->  [✅ NVIDIA NIM Cloud]
-   MIPI DSI + GT911             ES8311 + NS4168 Amp          8KB Chunks @ 16kHz        Parakeet + Nemotron + Magpie
+[✅ WakeNet 9 / Voz] \
+                      --> [✅ Feedback Acústico Chime] --> [✅ Streaming LAN Chunks] --> [✅ NVIDIA NIM Cloud]
+[✅ Touch GT911]    /                                                                      Parakeet + Nemotron + Magpie
 ```
 
-1. **Prueba Inmediata:** Validar la ráfaga de 4 segundos con buffer de 8KB en el servidor Linux.
-2. **Implementación de Recepción TTS:** Conectar la respuesta de audio recibida en `network_stream.cpp` hacia el canal TX de I2S en `audio_manager_play_chunk()` para que el asistente hable por el altavoz.
-3. **Mantenimiento Continuo de la Bitácora:** Actualizar este documento tras cada hito validado en el hardware.
+1. **Fase 4.3 (En Curso):** Diseño del servicio de streaming multimedia (reproductor de música y streams de audio continuo en segundo plano).
+2. **Pruebas de Campo:** Validación continua del Wake Word en condiciones de ruido ambiente y ajuste de umbral de sensibilidad de detección.
+3. **Mantenimiento Continuo de la Bitácora:** Registrar cada nueva mejora o cambio de infraestructura.

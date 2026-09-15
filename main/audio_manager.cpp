@@ -8,6 +8,7 @@
 #include "UI_Manager.h"
 #include <string.h>
 #include <atomic>
+#include <math.h>
 
 // Soporte ESP-SR (Audio Front-End y WakeNet)
 #if __has_include("esp_afe_sr_models.h")
@@ -165,10 +166,61 @@ static void afe_fetch_task(void *arg) {
     }
 }
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
+
+esp_err_t audio_manager_play_chime(void) {
+    if (!tx_chan || !s_tx_stereo_buffer) return ESP_FAIL;
+
+    const int sample_rate = 16000;
+    const int duration1_ms = 45;
+    const int duration2_ms = 65;
+    const int n1 = (sample_rate * duration1_ms) / 1000; // 720 muestras
+    const int n2 = (sample_rate * duration2_ms) / 1000; // 1040 muestras
+    const int total_samples = n1 + n2;                 // 1760 muestras (110 ms)
+    const size_t total_bytes = total_samples * 2 * sizeof(int16_t); // 7040 bytes
+
+    if (total_bytes > MAX_TX_STEREO_BUFFER_BYTES) return ESP_ERR_NO_MEM;
+
+    const float freq1 = 880.0f;  // La5
+    const float freq2 = 1320.0f; // Mi6
+    const float max_amp = 6500.0f; // Nivel cómodo y sin saturación
+
+    for (int i = 0; i < total_samples; i++) {
+        float f = (i < n1) ? freq1 : freq2;
+        int idx_in_tone = (i < n1) ? i : (i - n1);
+        int tone_len = (i < n1) ? n1 : n2;
+
+        // Envolvente de volumen (fade-in 8ms y fade-out 12ms) para evitar chasquidos DC
+        float env = 1.0f;
+        int fade_in_samples = (sample_rate * 8) / 1000;
+        int fade_out_samples = (sample_rate * 12) / 1000;
+
+        if (idx_in_tone < fade_in_samples) {
+            env = (float)idx_in_tone / (float)fade_in_samples;
+        } else if (idx_in_tone > (tone_len - fade_out_samples)) {
+            env = (float)(tone_len - idx_in_tone) / (float)fade_out_samples;
+        }
+
+        float sample_val = sinf(2.0f * (float)M_PI * f * (float)idx_in_tone / (float)sample_rate) * max_amp * env;
+        int16_t val16 = (int16_t)sample_val;
+
+        s_tx_stereo_buffer[i * 2]     = val16; // Canal Izquierdo
+        s_tx_stereo_buffer[i * 2 + 1] = val16; // Canal Derecho
+    }
+
+    size_t bytes_written = 0;
+    return i2s_channel_write(tx_chan, s_tx_stereo_buffer, total_bytes, &bytes_written, portMAX_DELAY);
+}
+
 void audio_manager_trigger_interaction(void) {
     ESP_LOGI(TAG_AM, "Interacción iniciada (Voz o Botón táctil).");
     ui_set_state(UI_STATE_LISTENING, "Escuchando (4s)...");
     
+    // Feedback auditivo instantáneo (Chime suave antes de abrir el micrófono)
+    audio_manager_play_chime();
+
     if (network_stream_start() == ESP_OK) {
         record_elapsed_ms.store(0, std::memory_order_relaxed);
         is_recording.store(true, std::memory_order_relaxed);
