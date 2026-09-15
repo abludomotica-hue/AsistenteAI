@@ -16,12 +16,15 @@
 #if SOC_MIPI_DSI_SUPPORTED
 #include "esp_lcd_mipi_dsi.h"
 #endif
-#include "src/touch/esp_lcd_touch.h"
+#include "esp_lcd_touch.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #if CONFIG_IDF_TARGET_ESP32P4
-#include "esp_private/esp_cache_private.h"
+/* Declare esp_cache_get_alignment to avoid including private header */
+esp_err_t esp_cache_get_alignment(uint32_t heap_caps, size_t *out_alignment);
+#if LVGL_PORT_PPA_ROTATION_ENABLE
 #include "driver/ppa.h"
+#endif
 #endif
 #include "lvgl.h"
 #include "lvgl_private.h"
@@ -688,7 +691,7 @@ void lvgl_port_unlock(void)
 bool lvgl_port_notify_lcd_vsync(void)
 {
     BaseType_t need_yield = pdFALSE;
-#if LVGL_PORT_FULL_REFRESH && (LVGL_PORT_LCD_RGB_BUFFER_NUMS == 3) && (EXAMPLE_LVGL_PORT_ROTATION_DEGREE == 0)
+#if LVGL_PORT_FULL_REFRESH && (LVGL_PORT_LCD_BUFFER_NUMS == 3) && (EXAMPLE_LVGL_PORT_ROTATION_DEGREE == 0)
     if (lvgl_port_rgb_next_buf != lvgl_port_rgb_last_buf) {
         lvgl_port_flush_next_buf = lvgl_port_rgb_last_buf;
         lvgl_port_rgb_last_buf = lvgl_port_rgb_next_buf;

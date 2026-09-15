@@ -10,7 +10,7 @@
 
 #include "esp_err.h"
 #include "esp_lcd_types.h"
-#include "src/touch/esp_lcd_touch.h"
+#include "esp_lcd_touch.h"
 #include "lvgl.h"
 #include "pins_config.h"
 
@@ -62,8 +62,14 @@ typedef enum {
 #define LVGL_PORT_BUFFER_MALLOC_CAPS    (MALLOC_CAP_SPIRAM)
 #elif CONFIG_EXAMPLE_LVGL_PORT_BUF_INTERNAL
 #define LVGL_PORT_BUFFER_MALLOC_CAPS    (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+#else
+#define LVGL_PORT_BUFFER_MALLOC_CAPS    (MALLOC_CAP_SPIRAM)
 #endif
+#ifdef CONFIG_EXAMPLE_LVGL_PORT_BUF_HEIGHT
 #define LVGL_PORT_BUFFER_HEIGHT         (CONFIG_EXAMPLE_LVGL_PORT_BUF_HEIGHT)
+#else
+#define LVGL_PORT_BUFFER_HEIGHT         (100)
+#endif
 
 /**
  * Avoid tering related configurations, can be adjusted by users.

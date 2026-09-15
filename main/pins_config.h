@@ -10,10 +10,9 @@
 #define EXAMPLE_LVGL_PORT_AVOID_TEAR_ENABLE   1
 
 #ifdef  EXAMPLE_LVGL_PORT_AVOID_TEAR_ENABLE
-#define EXAMPLE_LVGL_PORT_AVOID_TEAR_MODE   3   //range 1 to 3
-
-#define EXAMPLE_LVGL_PORT_ROTATION_DEGREE_ 90   // 0,90,180 or 270
-#define EXAMPLE_LVGL_PORT_PPA_ROTATION_ENABLE 1
+#define EXAMPLE_LVGL_PORT_AVOID_TEAR_MODE   3   // Modo Directo (Demo Oficial)
+#define EXAMPLE_LVGL_PORT_ROTATION_DEGREE_ 90   // 90 grados Horizontal (800x480)
+#define EXAMPLE_LVGL_PORT_PPA_ROTATION_ENABLE 0 // Rotación por bloques de software (compatible IDF v5.3)
 #endif
 
 
