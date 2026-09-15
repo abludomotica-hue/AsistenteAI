@@ -7,6 +7,18 @@
 #include "driver/gpio.h"
 #include "UI_Manager.h"
 #include <string.h>
+#include <atomic>
+
+// Soporte ESP-SR (Audio Front-End y WakeNet)
+#if __has_include("esp_afe_sr_models.h")
+#define HAVE_ESP_SR 1
+#include "esp_afe_sr_models.h"
+#include "esp_afe_sr_iface.h"
+#include "esp_wn_iface.h"
+#include "esp_wn_models.h"
+#else
+#define HAVE_ESP_SR 0
+#endif
 
 // Variables compartidas
 #include "freertos/queue.h"
@@ -20,8 +32,6 @@ static const char *TAG_AM = "AUDIO_MANAGER";
 static i2s_chan_handle_t rx_chan = NULL;
 static i2s_chan_handle_t tx_chan = NULL;
 
-#include <atomic>
-
 // Control de grabación atómico
 static std::atomic<bool> is_recording(false);
 static const int RECORD_DURATION_MS = 4000; // Grabar por 4 segundos
@@ -30,6 +40,12 @@ static std::atomic<int> record_elapsed_ms(0);
 // Buffer estático de reproducción TTS en PSRAM (previene malloc/free en caliente)
 static const size_t MAX_TX_STEREO_BUFFER_BYTES = 16384;
 static int16_t *s_tx_stereo_buffer = NULL;
+
+#if HAVE_ESP_SR
+static esp_afe_sr_iface_t *s_afe_handle = NULL;
+static esp_afe_sr_data_t *s_afe_data = NULL;
+static volatile bool s_wakenet_enabled = false;
+#endif
 
 static void init_i2s(void) {
     ESP_LOGI(TAG_AM, "Inicializando I2S...");
@@ -100,21 +116,20 @@ static void afe_fetch_task(void *arg) {
 
     while (1) {
         if (i2s_channel_read(rx_chan, stereo_buffer, stereo_buffer_size, &bytes_read, portMAX_DELAY) == ESP_OK) {
-            if (is_recording) {
-                // Downmix de Estéreo a Mono (extraemos el canal Left del micrófono analógico)
-                size_t stereo_samples = bytes_read / sizeof(int16_t);
-                size_t mono_samples = stereo_samples / 2;
-                
-                for (size_t i = 0; i < mono_samples; i++) {
-                    mono_buffer[i] = stereo_buffer[i * 2]; // Canal Left
-                }
-                
-                size_t mono_bytes = mono_samples * sizeof(int16_t);
-                
+            size_t stereo_samples = bytes_read / sizeof(int16_t);
+            size_t mono_samples = stereo_samples / 2;
+            
+            // Downmix de Estéreo a Mono (extraemos el canal Left del micrófono analógico)
+            for (size_t i = 0; i < mono_samples; i++) {
+                mono_buffer[i] = stereo_buffer[i * 2]; // Canal Left
+            }
+            size_t mono_bytes = mono_samples * sizeof(int16_t);
+
+            if (is_recording.load(std::memory_order_relaxed)) {
                 // Enviar chunk de audio mono por la red
                 if (network_stream_send_chunk(mono_buffer, mono_bytes) != ESP_OK) {
                     ESP_LOGE(TAG_AM, "Error enviando chunk, abortando grabación.");
-                    is_recording = false;
+                    is_recording.store(false, std::memory_order_relaxed);
                     network_stream_abort();
                     ui_set_state(UI_STATE_IDLE, "Error de red");
                     continue;
@@ -122,17 +137,28 @@ static void afe_fetch_task(void *arg) {
                 
                 // Calcular tiempo transcurrido (16kHz 16bit Mono = 32000 bytes/seg)
                 int elapsed_chunk_ms = (mono_bytes * 1000) / 32000;
-                record_elapsed_ms += elapsed_chunk_ms;
+                int current_elapsed = record_elapsed_ms.fetch_add(elapsed_chunk_ms) + elapsed_chunk_ms;
                 
-                if (record_elapsed_ms >= RECORD_DURATION_MS) {
-                    ESP_LOGI(TAG_AM, "Grabación finalizada (%d ms). Solicitando respuesta...", record_elapsed_ms);
-                    is_recording = false;
+                if (current_elapsed >= RECORD_DURATION_MS) {
+                    ESP_LOGI(TAG_AM, "Grabación finalizada (%d ms). Solicitando respuesta...", current_elapsed);
+                    is_recording.store(false, std::memory_order_relaxed);
                     ui_set_state(UI_STATE_THINKING, "Analizando audio...");
                     
                     // Finaliza el request chunked HTTP POST
                     network_stream_finish_and_receive();
                 }
             }
+#if HAVE_ESP_SR
+            else if (s_wakenet_enabled && s_afe_handle && s_afe_data) {
+                // Ingesta continua en AFE para detección de Wake Word en reposo
+                s_afe_handle->feed(s_afe_data, mono_buffer);
+                afe_fetch_result_t *res = s_afe_handle->fetch(s_afe_data);
+                if (res && res->wake_word_detected == WAKENET_DETECTED) {
+                    ESP_LOGI(TAG_AM, "¡WAKE WORD DETECTADO POR VOZ! Activando asistente...");
+                    audio_manager_trigger_interaction();
+                }
+            }
+#endif
         } else {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
@@ -140,12 +166,12 @@ static void afe_fetch_task(void *arg) {
 }
 
 void audio_manager_trigger_interaction(void) {
-    ESP_LOGI(TAG_AM, "Interacción iniciada manualmente por Botón.");
+    ESP_LOGI(TAG_AM, "Interacción iniciada (Voz o Botón táctil).");
     ui_set_state(UI_STATE_LISTENING, "Escuchando (4s)...");
     
     if (network_stream_start() == ESP_OK) {
-        record_elapsed_ms = 0;
-        is_recording = true;
+        record_elapsed_ms.store(0, std::memory_order_relaxed);
+        is_recording.store(true, std::memory_order_relaxed);
     } else {
         ui_set_state(UI_STATE_IDLE, "Fallo de conexión");
     }
@@ -165,6 +191,29 @@ esp_err_t audio_manager_init(void) {
             ESP_LOGI(TAG_AM, "Buffer TX estático de %d bytes pre-asignado en PSRAM.", (int)MAX_TX_STEREO_BUFFER_BYTES);
         }
     }
+
+#if HAVE_ESP_SR
+    // Configurar Audio Front-End (AFE) para detección de Wake Word
+    ESP_LOGI(TAG_AM, "Configurando ESP-SR WakeNet...");
+    afe_config_t afe_config = AFE_CONFIG_DEFAULT();
+    afe_config.memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+    afe_config.wakenet_init = true;
+    afe_config.voice_communication_init = false;
+    afe_config.pcm_config.total_ch_num = 1;
+    afe_config.pcm_config.mic_num = 1;
+    afe_config.pcm_config.ref_num = 0;
+    
+    s_afe_handle = (esp_afe_sr_iface_t *)&ESP_AFE_SR_HANDLE;
+    if (s_afe_handle) {
+        s_afe_data = s_afe_handle->create_from_config(&afe_config);
+        if (s_afe_data) {
+            s_wakenet_enabled = true;
+            ESP_LOGI(TAG_AM, "ESP-SR WakeNet inicializado correctamente. Wake Word activo ('Hi, ESP').");
+        } else {
+            ESP_LOGW(TAG_AM, "No se pudo crear instancia AFE. Operando en modo manual.");
+        }
+    }
+#endif
     
     xTaskCreatePinnedToCore(afe_fetch_task, "afe_fetch", 8192, NULL, 5, NULL, 0);
     xTaskCreatePinnedToCore(audio_control_task, "audio_ctrl", 4096, NULL, 5, NULL, 0);

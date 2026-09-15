@@ -6,3 +6,4 @@
   espressif/esp_lcd_touch_gt911: "^1"
   esp_codec_dev: "1.2.*"
   espressif/esp_wifi_remote: '*'
+  espressif/esp-sr: "^2.0.0"
