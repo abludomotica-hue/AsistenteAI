@@ -269,6 +269,15 @@ flowchart TD
   3. Redirigir el perfil de usuario y la caché del navegador (`~/.config/google-chrome` y `~/.cache/google-chrome`) hacia `/data/chrome-profile/` mediante enlaces simbólicos.
 - **Consecuencias:** Consumo nulo en la partición raíz `/`, Google Chrome totalmente funcional en GNOME con integración de menú y aceleración GPU, y disponibilidad de 48 GB para navegación y descargas.
 
+### ADR-012: Migración de Directorios de Usuario XDG y Cachés a Volumen de Datos /data
+- **Contexto:** Al descargar archivos o navegar en GNOME, el sistema emitía notificaciones continuas de "Poco espacio en disco" debido a que `~/Descargas`, `~/.cache` y `~/.npm` residían en la partición raíz reducida `/dev/sda2` (<1 GB libre, activando el umbral de GNOME Housekeeping).
+- **Decisión:** 
+  1. Crear la estructura estándar de carpetas de usuario en `/data/usuario/` (`Descargas`, `Documentos`, `Escritorio`, `Imágenes`, `Música`, `Plantillas`, `Público`, `Vídeos`) y enlazarlas simbólicamente en `/home/ablutech/`.
+  2. Actualizar la especificación XDG del usuario en `~/.config/user-dirs.dirs` para registrar las rutas canónicas sobre `/data/usuario/`.
+  3. Migrar `~/.cache` y `~/.npm` hacia `/data/`, liberando inmediatamente 365 MB en `/dev/sda2`.
+  4. Ajustar los umbrales de alerta de `org.gnome.settings-daemon.plugins.housekeeping` (`free-percent-notify = 0.02`, `free-size-gb-no-notify = 0`).
+- **Consecuencias:** Partición raíz `/` recupera 1.3 GB libres (80% uso), desaparición total de advertencias molestas de espacio, y disponibilidad directa de 47 GB para descargas y archivos multimedia del usuario.
+
 ---
 
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
