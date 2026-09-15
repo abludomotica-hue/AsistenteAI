@@ -1,0 +1,22 @@
+# ==============================================================================
+# PLANTILLA DE CONFIGURACIÓN DE APIS NVIDIA Y CREDENCIALES WIFI (EJEMPLO)
+# ==============================================================================
+# IMPORTANTE: Copie este archivo como referencia. NUNCA coloque contraseñas reales
+# en archivos versionados por Git.
+#
+# Para configurar WiFi y URLs en el Firmware: copie main/config.h.example -> main/config.h
+# Para configurar Keys en el AI Gateway Debian: copie bridge.env.example -> bridge.env
+# ==============================================================================
+
+WIFI_SSID="TU_RED_WIFI"
+WIFI_PASS="TU_PASSWORD_WIFI"
+
+# NVIDIA NIM - Modelos utilizados en el proyecto:
+# LLM: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+NVIDIA_LLM_API_KEY="nvapi-XXXX-TU-API-KEY-AQUI"
+
+# ASR / STT: parakeet-1.1b-rnnt-multilingual-asr
+NVIDIA_STT_FUNCTION_ID="TU_FUNCTION_ID_STT"
+
+# TTS: Magpie Multilingual (Diego / Camila)
+NVIDIA_TTS_FUNCTION_ID="TU_FUNCTION_ID_TTS"

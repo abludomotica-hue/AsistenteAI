@@ -5,8 +5,11 @@ config.h
 bridge.env
 .env
 *.env.local
+docs/HA.md
+docs/API_nvidia.txt
 DOCUMENT/API_nvidia.txt
 DOCUMENT/github.md
+scratch/
 
 
 # ============================================
@@ -26,6 +29,8 @@ JC4880P443C_I_W/
 # Artefactos de compilación
 # ============================================
 build/
+sdkconfig
+managed_components/
 *.elf
 *.map
 *.bin.out
@@ -39,3 +44,4 @@ Thumbs.db
 desktop.ini
 .vscode/
 .opencode/
+.cache/

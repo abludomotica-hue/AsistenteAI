@@ -59,6 +59,18 @@ with open(BRIDGE_FILE, 'r', encoding='utf-8') as f:
 # (gitignored). Plantilla de referencia: bridge.env.example
 ENV_FILE = os.path.join(SCRIPT_DIR, "bridge.env")
 
+# ==========================================
+# CONTENIDO DE REQUIREMENTS
+# ==========================================
+REQ_FILE = os.path.join(SCRIPT_DIR, "requirements.txt")
+if not os.path.exists(REQ_FILE):
+    print(f"Error: No se encontró {REQ_FILE}")
+    sys.exit(1)
+
+with open(REQ_FILE, 'r', encoding='utf-8') as f:
+    req_content = f.read()
+
+
 if not os.path.exists(ENV_FILE):
     print(f"Error: No se encontró {ENV_FILE}")
     print("Copia bridge.env.example a bridge.env y rellena los valores reales.")
@@ -149,10 +161,6 @@ def main():
             pass
 
         if env_exists:
-            # Leer el .env existente para ver si ya tiene TTS_FUNCTION_ID real
-            with sftp.file(f'{REMOTE_DIR}/.env', 'r') as f:
-                existing_env = f.read().decode('utf-8') if isinstance(f.read(), bytes) else ""
-
             # Hacer backup del .env existente
             execute(ssh, f"cp {REMOTE_DIR}/.env {REMOTE_DIR}/.env.backup",
                     "Backup de .env existente → .env.backup")
@@ -164,6 +172,11 @@ def main():
             with sftp.file(f'{REMOTE_DIR}/.env', 'w') as f:
                 f.write(env_content)
             print("  ✅ .env creado")
+            
+        # requirements.txt
+        with sftp.file(f'{REMOTE_DIR}/requirements.txt', 'w') as f:
+            f.write(req_content)
+        print("  ✅ requirements.txt actualizado")
 
         # systemd service
         with sftp.file(f'{REMOTE_DIR}/riva-bridge.service', 'w') as f:
@@ -182,8 +195,8 @@ def main():
             execute(ssh, f"python3 -m venv {REMOTE_DIR}/venv",
                     "python3 -m venv")
 
-        execute(ssh, f"{REMOTE_DIR}/venv/bin/pip install -q --upgrade flask nvidia-riva-client grpcio requests waitress",
-                "Actualizando pip packages...")
+        execute(ssh, f"{REMOTE_DIR}/venv/bin/pip install -q --upgrade -r {REMOTE_DIR}/requirements.txt",
+                "Instalando dependencias desde requirements.txt...")
         print("  ✅ Dependencias OK")
 
         # 5. Configurar y reiniciar systemd
