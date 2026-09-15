@@ -261,6 +261,14 @@ flowchart TD
 - **Decisión:** Habilitar el subsistema nativo `gnome-remote-desktop` mediante `grdctl`, aprovisionando certificados TLS RSA-2048 de 10 años de validez (`/home/ablutech/.local/share/gnome-remote-desktop/`), deshabilitando el modo de solo lectura (`disable-view-only`), configurando credenciales de usuario y desactivando las políticas de suspensión de energía en la VM (`sleep-inactive-ac-type: 'nothing'`).
 - **Consecuencias:** Acceso gráfico directo y de baja latencia mediante `mstsc.exe` en Windows a través del puerto TCP 3389, soporte completo para portapapeles bidireccional y pantalla completa con aceleración gráfica por hardware. Consumo de RAM de solo 17.2 MB para el servicio RDP.
 
+### ADR-011: Despliegue Aislado de Google Chrome mediante Montaje Bind en /data/opt
+- **Contexto:** La instalación estándar de Google Chrome (~450 MB de binarios más cachés web continuas de 1 a 2 GB) amenazaba con volver a colapsar la partición raíz `/dev/sda2` (que solo cuenta con ~1 GB libre).
+- **Decisión:** 
+  1. Configurar un montaje enlazado (*bind mount*) permanente en `/etc/fstab` de `/data/opt` sobre `/opt` (`/data/opt /opt none bind 0 0`).
+  2. Instalar Google Chrome Stable 153.x directamente en el sistema, alojando todos sus binarios transparentemente en `/data/opt/google/chrome`.
+  3. Redirigir el perfil de usuario y la caché del navegador (`~/.config/google-chrome` y `~/.cache/google-chrome`) hacia `/data/chrome-profile/` mediante enlaces simbólicos.
+- **Consecuencias:** Consumo nulo en la partición raíz `/`, Google Chrome totalmente funcional en GNOME con integración de menú y aceleración GPU, y disponibilidad de 48 GB para navegación y descargas.
+
 ---
 
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
