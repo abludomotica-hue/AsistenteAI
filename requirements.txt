@@ -1,6 +1,6 @@
 flask==3.0.3
 nvidia-riva-client==2.14.0
-grpcio==1.62.1
-requests==2.31.0
-waitress==3.0.0
+grpcio>=1.62.1
+requests>=2.32.4
+waitress>=3.0.2
 python-dotenv==1.0.1

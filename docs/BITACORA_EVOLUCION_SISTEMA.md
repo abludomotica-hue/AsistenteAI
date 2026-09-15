@@ -243,6 +243,11 @@ flowchart TD
 - **Decisión:** Asignar un segundo disco virtual SCSI (`scsi1`) de 50 GB sobre el pool ZFS de Proxmox conectado en caliente (*hotplug*), montado en `/data` con soporte TRIM (`discard,noatime`).
 - **Consecuencias:** Cero tiempo de inactividad (*zero-downtime*), preservación absoluta de los contenedores Docker en `/srv` y 50 GB inmediatos para almacenamiento de modelos, logs y medios.
 
+### ADR-008: Aislamiento de Entorno de Ejecución OpenClaw en Disco de Alta Capacidad
+- **Contexto:** La instalación de frameworks de agentes IA como OpenClaw (Node.js 24 LTS, paquetes npm globales y almacenes de estado de agentes) satura particiones raíz reducidas.
+- **Decisión:** Instalar Node.js v24.21.0 y el prefijo de paquetes globales de npm directamente dentro de `/data` (`/data/nodejs` y `/data/npm-global`), enlazando el directorio de estado `~/.openclaw` hacia `/data/.openclaw`.
+- **Consecuencias:** Consumo nulo en la partición `/dev/sda2`, acceso universal al comando `openclaw` y disponibilidad de 48 GB para agentes, herramientas y canales de mensajería.
+
 ---
 
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
@@ -251,9 +256,10 @@ flowchart TD
 [✅ WakeNet 9 / Voz] \
                       --> [✅ Feedback Acústico Chime] --> [✅ Streaming LAN Chunks] --> [✅ NVIDIA NIM Cloud]
 [✅ Touch GT911]    /                                                                      Parakeet + Nemotron + Magpie
+                                                                                      + [✅ OpenClaw 2026.9.4 Agent Gateway]
 ```
 
-1. **Infraestructura VM 104:** 100% Optimizada con 83.4 GB libres globales, nuevo disco `/dev/sdb1` de 50 GB montado en `/data` y snapshot de resguardo activo.
+1. **Infraestructura VM 104:** 100% Optimizada con 83.4 GB libres globales, nuevo disco `/dev/sdb1` de 50 GB montado en `/data`, OpenClaw 2026.9.4 instalado y snapshot de resguardo activo.
 2. **Firmware ESP32-P4:** Compilación y carga del binario con WakeNet 9, Chime I2S y control de volumen maestro vía VS Code.
 3. **Fase 4.3 (En Curso):** Diseño del servicio de streaming multimedia (reproductor de música y streams de audio continuo en segundo plano).
 4. **Mantenimiento Continuo de la Bitácora:** Registrar cada nueva mejora o cambio de infraestructura.

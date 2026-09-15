@@ -1,20 +1,25 @@
 """
-Deploy Bridge Server v2 to Debian VM via SSH
-=============================================
-Este script automatiza la actualización del bridge_server.py en la VM Debian.
+Deploy Bridge Server v2 to Debian VM via SSH (Hardened Edition)
+===============================================================
+Automatiza el despliegue seguro de bridge_server.py y sus dependencias en la VM Debian.
 
 Uso:
-  $env:DEBIAN_PASS = "tu_password_ssh"   # PowerShell
-  python deploy_bridge_v2.py
+  Opción A (Llave SSH recomendada):
+    python deploy_bridge_v2.py  (detecta automáticamente ~/.ssh/id_ed25519 o id_rsa)
+
+  Opción B (Contraseña SSH):
+    $env:DEBIAN_PASS = "tu_password_ssh"   # PowerShell
+    python deploy_bridge_v2.py
 
 Requisitos:
   pip install paramiko
-  Archivo `bridge.env` en esta carpeta (copia bridge.env.example y
-  rellena los valores reales). `bridge.env` está fuera de git.
+  Archivo `bridge.env` en esta carpeta (copia bridge.env.example y rellena los valores reales).
 
 Variables de entorno opcionales:
-  DEBIAN_HOST (default 192.168.1.58), DEBIAN_USER (default ablutech),
-  DEBIAN_PASS (obligatoria, sin default)
+  DEBIAN_HOST (default: 192.168.1.58)
+  DEBIAN_USER (default: ablutech)
+  DEBIAN_PASS (password SSH y sudo, opcional si se usa llave y NOPASSWD)
+  DEBIAN_KEY  (ruta a llave privada SSH personalizada)
 """
 
 import os
@@ -34,53 +39,42 @@ except ImportError:
 HOSTNAME = os.getenv("DEBIAN_HOST", "192.168.1.58")
 USERNAME = os.getenv("DEBIAN_USER", "ablutech")
 PASSWORD = os.getenv("DEBIAN_PASS", "")
+CUSTOM_KEY = os.getenv("DEBIAN_KEY", "")
 
 REMOTE_DIR = "/home/ablutech/riva-bridge"
 SERVICE_NAME = "riva-bridge"
 
 # ==========================================
-# CONTENIDO DEL BRIDGE SERVER v2
+# LECTURA DE ARCHIVOS LOCALES
 # ==========================================
-# Leer el archivo bridge_server.py del directorio actual
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BRIDGE_FILE = os.path.join(SCRIPT_DIR, "bridge_server.py")
+ENV_FILE = os.path.join(SCRIPT_DIR, "bridge.env")
+REQ_FILE = os.path.join(SCRIPT_DIR, "requirements.txt")
 
 if not os.path.exists(BRIDGE_FILE):
-    print(f"Error: No se encontró {BRIDGE_FILE}")
+    print(f"❌ Error: No se encontró {BRIDGE_FILE}")
     sys.exit(1)
 
 with open(BRIDGE_FILE, 'r', encoding='utf-8') as f:
     server_code = f.read()
 
-# ==========================================
-# CONTENIDO DEL .env (desde bridge.env local, fuera de git)
-# ==========================================
-# Las API Keys y Function IDs reales viven en `bridge.env`
-# (gitignored). Plantilla de referencia: bridge.env.example
-ENV_FILE = os.path.join(SCRIPT_DIR, "bridge.env")
-
-# ==========================================
-# CONTENIDO DE REQUIREMENTS
-# ==========================================
-REQ_FILE = os.path.join(SCRIPT_DIR, "requirements.txt")
 if not os.path.exists(REQ_FILE):
-    print(f"Error: No se encontró {REQ_FILE}")
+    print(f"❌ Error: No se encontró {REQ_FILE}")
     sys.exit(1)
 
 with open(REQ_FILE, 'r', encoding='utf-8') as f:
     req_content = f.read()
 
-
-if not os.path.exists(ENV_FILE):
-    print(f"Error: No se encontró {ENV_FILE}")
-    print("Copia bridge.env.example a bridge.env y rellena los valores reales.")
-    sys.exit(1)
-
-with open(ENV_FILE, 'r', encoding='utf-8') as f:
-    env_content = f.read()
+env_content = None
+if os.path.exists(ENV_FILE):
+    with open(ENV_FILE, 'r', encoding='utf-8') as f:
+        env_content = f.read()
+else:
+    print("⚠️  Aviso: No se encontró bridge.env. Si el servidor remoto ya tiene .env configurado, se preservará.")
 
 # ==========================================
-# CONTENIDO DEL SERVICIO SYSTEMD
+# DEFINICIÓN DEL SERVICIO SYSTEMD
 # ==========================================
 service_content = """[Unit]
 Description=NVIDIA Riva Bridge Server v2 (Magpie TTS)
@@ -99,16 +93,16 @@ WantedBy=multi-user.target
 """
 
 # ==========================================
-# FUNCIONES DE EJECUCIÓN REMOTA
+# FUNCIONES DE EJECUCIÓN REMOTA SEGURA
 # ==========================================
 def execute(ssh, command, description=""):
-    """Ejecuta un comando SSH y muestra el resultado."""
+    """Ejecuta un comando SSH estándar."""
     if description:
         print(f"  → {description}")
     stdin, stdout, stderr = ssh.exec_command(command)
     exit_status = stdout.channel.recv_exit_status()
-    out = stdout.read().decode('utf-8').strip()
-    err = stderr.read().decode('utf-8').strip()
+    out = stdout.read().decode('utf-8', errors='replace').strip()
+    err = stderr.read().decode('utf-8', errors='replace').strip()
     if out:
         for line in out.split('\n'):
             print(f"    {line}")
@@ -117,34 +111,96 @@ def execute(ssh, command, description=""):
     return exit_status, out
 
 
+def execute_sudo(ssh, command, sudo_pass="", description=""):
+    """
+    Ejecuta un comando con sudo de forma segura.
+    Alimenta la contraseña vía stdin interactivo de Paramiko para evitar
+    exponerla en la línea de comandos /proc/*/cmdline.
+    """
+    if description:
+        print(f"  → [sudo] {description}")
+    stdin, stdout, stderr = ssh.exec_command(f"sudo -S -p '' {command}")
+    
+    if sudo_pass:
+        stdin.write(f"{sudo_pass}\n")
+        stdin.flush()
+        
+    exit_status = stdout.channel.recv_exit_status()
+    out = stdout.read().decode('utf-8', errors='replace').strip()
+    err = stderr.read().decode('utf-8', errors='replace').strip()
+    if out:
+        for line in out.split('\n'):
+            print(f"    {line}")
+    if err and exit_status != 0:
+        print(f"    ⚠ {err}")
+    return exit_status, out
+
+
+def find_ssh_key():
+    """Identifica si existe una llave privada SSH utilizable."""
+    if CUSTOM_KEY and os.path.exists(CUSTOM_KEY):
+        return CUSTOM_KEY
+    candidates = [
+        os.path.expanduser("~/.ssh/id_ed25519"),
+        os.path.expanduser("~/.ssh/id_rsa")
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
 def main():
-    if not PASSWORD:
-        print("Error: Falta la variable de entorno DEBIAN_PASS (password SSH).")
-        print("  PowerShell:  $env:DEBIAN_PASS = 'tu_password'")
-        print("  Bash:        export DEBIAN_PASS='tu_password'")
+    key_file = find_ssh_key()
+
+    if not PASSWORD and not key_file:
+        print("❌ Error: No se encontró método de autenticación SSH.")
+        print("  Configura una llave en ~/.ssh/id_ed25519 (o id_rsa)")
+        print("  O define la contraseña en la variable de entorno:")
+        print("    PowerShell:  $env:DEBIAN_PASS = 'tu_password'")
+        print("    Bash:        export DEBIAN_PASS='tu_password'")
         sys.exit(1)
 
     print("=" * 60)
-    print("  Deploy Bridge Server v2 → Debian VM")
+    print("  Deploy Bridge Server v2 (Hardened) → Debian VM")
     print(f"  Host: {HOSTNAME}")
     print(f"  User: {USERNAME}")
+    print(f"  Auth: {'Llave SSH (' + os.path.basename(key_file) + ')' if key_file else 'Contraseña'}")
     print(f"  Dir:  {REMOTE_DIR}")
     print("=" * 60)
 
+    ssh = paramiko.SSHClient()
     try:
-        # 1. Conectar por SSH
+        ssh.load_system_host_keys()
+    except Exception:
+        pass
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    connected = False
+    try:
         print("\n[1/6] Conectando a Debian vía SSH...")
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(HOSTNAME, username=USERNAME, password=PASSWORD, timeout=10)
-        print("  ✅ Conectado")
+        connect_kwargs = {
+            "hostname": HOSTNAME,
+            "username": USERNAME,
+            "timeout": 10
+        }
+        if key_file:
+            connect_kwargs["key_filename"] = key_file
+            if PASSWORD:
+                connect_kwargs["password"] = PASSWORD  # Soporta llaves con passphrase o fallback
+        else:
+            connect_kwargs["password"] = PASSWORD
 
-        # 2. Crear directorio si no existe
+        ssh.connect(**connect_kwargs)
+        connected = True
+        print("  ✅ Conexión establecida exitosamente.")
+
+        # 2. Preparar directorio remoto
         print("\n[2/6] Preparando directorio remoto...")
-        execute(ssh, f"mkdir -p {REMOTE_DIR}", "Creando directorio")
+        execute(ssh, f"mkdir -p {REMOTE_DIR}", "Verificando estructura de directorios")
 
-        # 3. Subir archivos
-        print("\n[3/6] Subiendo archivos...")
+        # 3. Subir archivos actualizados
+        print("\n[3/6] Sincronizando archivos con SFTP...")
         sftp = ssh.open_sftp()
 
         # bridge_server.py
@@ -152,31 +208,25 @@ def main():
             f.write(server_code)
         print("  ✅ bridge_server.py actualizado")
 
-        # .env (solo si no existe o si el usuario quiere sobreescribir)
-        env_exists = False
-        try:
-            sftp.stat(f'{REMOTE_DIR}/.env')
-            env_exists = True
-        except FileNotFoundError:
-            pass
-
-        if env_exists:
-            # Hacer backup del .env existente
-            execute(ssh, f"cp {REMOTE_DIR}/.env {REMOTE_DIR}/.env.backup",
-                    "Backup de .env existente → .env.backup")
-            # Escribir nuevo .env
-            with sftp.file(f'{REMOTE_DIR}/.env', 'w') as f:
-                f.write(env_content)
-            print("  ✅ .env actualizado (backup guardado como .env.backup)")
-        else:
-            with sftp.file(f'{REMOTE_DIR}/.env', 'w') as f:
-                f.write(env_content)
-            print("  ✅ .env creado")
-            
         # requirements.txt
         with sftp.file(f'{REMOTE_DIR}/requirements.txt', 'w') as f:
             f.write(req_content)
-        print("  ✅ requirements.txt actualizado")
+        print("  ✅ requirements.txt actualizado (versiones reforzadas)")
+
+        # .env
+        if env_content is not None:
+            env_exists = False
+            try:
+                sftp.stat(f'{REMOTE_DIR}/.env')
+                env_exists = True
+            except FileNotFoundError:
+                pass
+
+            if env_exists:
+                execute(ssh, f"cp {REMOTE_DIR}/.env {REMOTE_DIR}/.env.backup", "Backup de .env existente")
+            with sftp.file(f'{REMOTE_DIR}/.env', 'w') as f:
+                f.write(env_content)
+            print("  ✅ .env sincronizado")
 
         # systemd service
         with sftp.file(f'{REMOTE_DIR}/riva-bridge.service', 'w') as f:
@@ -185,67 +235,53 @@ def main():
 
         sftp.close()
 
-        # 4. Instalar/actualizar dependencias
-        print("\n[4/6] Verificando dependencias de Python...")
-
-        # Verificar si el venv existe
+        # 4. Actualizar dependencias en entorno virtual
+        print("\n[4/6] Actualizando dependencias de Python...")
         status, _ = execute(ssh, f"test -d {REMOTE_DIR}/venv && echo 'exists'")
         if "exists" not in _:
-            print("  Creando entorno virtual...")
-            execute(ssh, f"python3 -m venv {REMOTE_DIR}/venv",
-                    "python3 -m venv")
+            execute(ssh, f"python3 -m venv {REMOTE_DIR}/venv", "Creando entorno virtual venv")
 
-        execute(ssh, f"{REMOTE_DIR}/venv/bin/pip install -q --upgrade -r {REMOTE_DIR}/requirements.txt",
-                "Instalando dependencias desde requirements.txt...")
-        print("  ✅ Dependencias OK")
+        execute(ssh, f"{REMOTE_DIR}/venv/bin/pip install -q --upgrade pip", "Actualizando pip en venv")
+        status, _ = execute(ssh, f"{REMOTE_DIR}/venv/bin/pip install -q --upgrade -r {REMOTE_DIR}/requirements.txt",
+                            "Instalando dependencias desde requirements.txt...")
+        if status == 0:
+            print("  ✅ Dependencias actualizadas y verificadas")
+        else:
+            print("  ⚠ Hubo advertencias o errores durante la instalación de paquetes.")
 
         # 5. Configurar y reiniciar systemd
-        print("\n[5/6] Configurando servicio systemd...")
-        execute(ssh, f"echo '{PASSWORD}' | sudo -S cp {REMOTE_DIR}/riva-bridge.service /etc/systemd/system/",
-                "Copiando servicio")
-        execute(ssh, f"echo '{PASSWORD}' | sudo -S systemctl daemon-reload",
-                "daemon-reload")
-        execute(ssh, f"echo '{PASSWORD}' | sudo -S systemctl enable {SERVICE_NAME}",
-                "Habilitando servicio")
-        execute(ssh, f"echo '{PASSWORD}' | sudo -S systemctl restart {SERVICE_NAME}",
-                "Reiniciando servicio")
-        print("  ✅ Servicio reiniciado")
+        print("\n[5/6] Configurando y reiniciando servicio systemd...")
+        execute_sudo(ssh, f"cp {REMOTE_DIR}/riva-bridge.service /etc/systemd/system/", PASSWORD, "Copiando unidad de servicio")
+        execute_sudo(ssh, "systemctl daemon-reload", PASSWORD, "systemctl daemon-reload")
+        execute_sudo(ssh, f"systemctl enable {SERVICE_NAME}", PASSWORD, f"Habilitando {SERVICE_NAME}")
+        execute_sudo(ssh, f"systemctl restart {SERVICE_NAME}", PASSWORD, f"Reiniciando {SERVICE_NAME}")
+        print("  ✅ Servicio reiniciado con éxito")
 
-        # 6. Verificar estado
-        print("\n[6/6] Verificando estado...")
-        time.sleep(2)  # Esperar a que arranque
-        execute(ssh, f"echo '{PASSWORD}' | sudo -S systemctl status {SERVICE_NAME} --no-pager -l",
-                "Estado del servicio")
+        # 6. Verificación de estado y salud
+        print("\n[6/6] Verificando estado del servicio...")
+        time.sleep(2)
+        execute_sudo(ssh, f"systemctl status {SERVICE_NAME} --no-pager -l", PASSWORD, "Consultando estado systemd")
 
-        # Intentar el health check
         time.sleep(1)
-        status, health_output = execute(ssh, "curl -s http://localhost:5000/health 2>/dev/null",
-                                        "Health check")
+        status, health_output = execute(ssh, "curl -s http://localhost:5000/health 2>/dev/null", "Ejecutando health check local")
         if health_output:
-            print(f"\n  Health: {health_output}")
-
-        ssh.close()
+            print(f"\n  📡 Diagnóstico de Salud (Health): {health_output}")
 
         print("\n" + "=" * 60)
-        print("  ✅ DESPLIEGUE COMPLETADO")
+        print("  ✅ DESPLIEGUE SEGURO COMPLETADO CON ÉXITO")
         print("=" * 60)
-        print(f"\n⚠️  ACCIÓN REQUERIDA:")
-        print(f"   Si TTS_FUNCTION_ID dice 'REEMPLAZAR_CON_TU_FUNCTION_ID',")
-        print(f"   edita el archivo .env en Debian:")
-        print(f"     ssh {USERNAME}@{HOSTNAME}")
-        print(f"     nano {REMOTE_DIR}/.env")
-        print(f"   Luego reinicia: sudo systemctl restart {SERVICE_NAME}")
-        print(f"\n   Test manual:")
-        print(f"     curl http://{HOSTNAME}:5000/health")
 
     except paramiko.ssh_exception.AuthenticationException:
-        print("  ❌ Error de autenticación SSH. Verifica usuario/contraseña.")
+        print("  ❌ Error de autenticación SSH. Verifica las credenciales o la llave privada.")
     except paramiko.ssh_exception.NoValidConnectionsError:
-        print(f"  ❌ No se puede conectar a {HOSTNAME}. ¿Está encendida la VM?")
+        print(f"  ❌ No se puede conectar a {HOSTNAME}:22. Verifica que la VM en Proxmox esté encendida.")
     except Exception as e:
-        print(f"  ❌ Error: {e}")
+        print(f"  ❌ Error inesperado: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        if connected:
+            ssh.close()
 
 
 if __name__ == '__main__':
