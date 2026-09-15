@@ -192,6 +192,19 @@ flowchart TD
 
 ## 🏛️ 4. Decisiones de Arquitectura (ADRs Resumidos)
 
+### 🔴 Incidente #16: Saturación al 100% de la Partición Raíz en Debian VM (Proxmox)
+- **Síntoma:** La partición raíz `/dev/sda2` (6.9 GB) alcanzó 0 MB disponibles (100% de ocupación), poniendo en riesgo la estabilidad del AI Gateway (`riva-bridge`) y del daemon Docker.
+- **Causa Raíz:** Particionado inicial desproporcionado (6.9 GB para `/` y 38.4 GB para `/srv`) sumado a la acumulación de paquetes de escritorio innecesarios (LibreOffice, Chrome) y kernels viejos en `/boot`.
+- **Solución de Ingeniería:**
+  1. Purga controlada con `apt purge` de LibreOffice y Chrome, eliminación de kernels obsoletos con `apt autoremove` y compactación de logs con `journalctl`, liberando 1.3 GB en `/` y 1.15 GB en `/var`.
+  2. Snapshot preventivo en Proxmox VE con consistencia de sistema de archivos (`qm snapshot 104 Pre-Expansion`).
+  3. Adición y conexión en caliente (*hotplug*) de un nuevo disco virtual SCSI de **50 GB** en pool ZFS (`local-zfs:vm-104-disk-0`).
+  4. Particionado GPT y formateo `ext4` (`/dev/sdb1`), montaje permanente en `/data` con opciones `noatime,discard` y symlink a `/home/ablutech/data`.
+
+---
+
+## 🏛️ 4. Decisiones de Arquitectura (ADRs Resumidos)
+
 ### ADR-001: Arquitectura de Streaming Chunked HTTP vs WebSockets / gRPC
 - **Contexto:** Necesidad de enviar audio continuo desde el microcontrolador al servidor con la menor sobrecarga de memoria.
 - **Decisión:** Utilizar **HTTP/1.1 Chunked Transfer Encoding** para la etapa de captura inicial por su simplicidad en el ESP32, migrando a **gRPC / WebSockets** en la Fase 4 cuando se requiera duplex completo interactivo (interrupción de voz / barge-in).
@@ -225,6 +238,11 @@ flowchart TD
 - **Decisión:** Habilitar el rollback en bootloader y validar la partición con `esp_ota_mark_app_valid_cancel_rollback()` tras el arranque completo, informando al usuario en pantalla mediante `esp_https_ota_perform()`.
 - **Consecuencias:** Anti-bricking de grado industrial y excelente visibilidad del proceso de actualización para el usuario.
 
+### ADR-007: Expansión de Almacenamiento Virtual mediante Hotplug SCSI en ZFS
+- **Contexto:** La partición raíz `/` tenía un tamaño rígido e intercalado que impedía la expansión contigua sin apagar la VM.
+- **Decisión:** Asignar un segundo disco virtual SCSI (`scsi1`) de 50 GB sobre el pool ZFS de Proxmox conectado en caliente (*hotplug*), montado en `/data` con soporte TRIM (`discard,noatime`).
+- **Consecuencias:** Cero tiempo de inactividad (*zero-downtime*), preservación absoluta de los contenedores Docker en `/srv` y 50 GB inmediatos para almacenamiento de modelos, logs y medios.
+
 ---
 
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
@@ -235,6 +253,7 @@ flowchart TD
 [✅ Touch GT911]    /                                                                      Parakeet + Nemotron + Magpie
 ```
 
-1. **Fase 4.3 (En Curso):** Diseño del servicio de streaming multimedia (reproductor de música y streams de audio continuo en segundo plano).
-2. **Pruebas de Campo:** Validación continua del Wake Word en condiciones de ruido ambiente y ajuste de umbral de sensibilidad de detección.
-3. **Mantenimiento Continuo de la Bitácora:** Registrar cada nueva mejora o cambio de infraestructura.
+1. **Infraestructura VM 104:** 100% Optimizada con 83.4 GB libres globales, nuevo disco `/dev/sdb1` de 50 GB montado en `/data` y snapshot de resguardo activo.
+2. **Firmware ESP32-P4:** Compilación y carga del binario con WakeNet 9, Chime I2S y control de volumen maestro vía VS Code.
+3. **Fase 4.3 (En Curso):** Diseño del servicio de streaming multimedia (reproductor de música y streams de audio continuo en segundo plano).
+4. **Mantenimiento Continuo de la Bitácora:** Registrar cada nueva mejora o cambio de infraestructura.
