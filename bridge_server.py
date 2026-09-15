@@ -523,13 +523,15 @@ def conversation_stream():
         enable_automatic_punctuation=True
     )
     transcript = ""
-    try:
-        response = asr_service.offline_recognize(audio_bytes, config)
-        if len(response.results) > 0 and len(response.results[0].alternatives) > 0:
-            transcript = response.results[0].alternatives[0].transcript
-    except Exception as e:
-        log.error(f"❌ Error en ASR orquestado: {e}")
-        return "Error en reconocimiento", 500
+    for attempt in range(2):
+        try:
+            response = asr_service.offline_recognize(audio_bytes, config)
+            if len(response.results) > 0 and len(response.results[0].alternatives) > 0:
+                transcript = response.results[0].alternatives[0].transcript
+            break
+        except Exception as e:
+            log.warning(f"⚠️ [Orquestador] ASR intento {attempt+1} falló: {e}")
+            time.sleep(0.5)
 
     if not transcript.strip():
         log.warning("⚠️  Audio sin voz inteligible.")
@@ -557,20 +559,26 @@ def conversation_stream():
 
     t_llm_start = time.time()
     llm_resp_text = ""
-    try:
-        resp = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=(5, 30))
-        if resp.status_code == 200:
-            doc = resp.json()
-            llm_resp_text = doc["choices"][0]["message"]["content"] or ""
-        else:
-            log.error(f"❌ Error LLM API HTTP {resp.status_code}: {resp.text}")
-            llm_resp_text = "Disculpa, tuve un problema temporal al consultar a la inteligencia artificial."
-    except Exception as e:
-        log.error(f"❌ Error contactando LLM: {e}")
-        llm_resp_text = "Disculpa, hubo un error de conexión con la inteligencia artificial."
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=(5, 30))
+            if resp.status_code == 200:
+                doc = resp.json()
+                llm_resp_text = doc["choices"][0]["message"]["content"] or ""
+                break
+            elif resp.status_code in (429, 502, 503, 504):
+                log.warning(f"⚠️ [Orquestador] LLM intento {attempt+1}/{max_retries} HTTP {resp.status_code}, reintentando en 1s...")
+                time.sleep(1)
+            else:
+                log.error(f"❌ [Orquestador] Error LLM API HTTP {resp.status_code}: {resp.text}")
+                break
+        except Exception as e:
+            log.warning(f"⚠️ [Orquestador] Error contactando LLM intento {attempt+1}: {e}")
+            time.sleep(1)
 
     if not llm_resp_text.strip():
-        llm_resp_text = "Disculpa, no pude generar una respuesta en este momento."
+        llm_resp_text = "Disculpa, tuve un problema temporal al consultar a la inteligencia artificial."
 
     # Control Home Assistant si aplica (con Whitelist A4)
     llm_resp_text = execute_ha_command_if_present(llm_resp_text)
