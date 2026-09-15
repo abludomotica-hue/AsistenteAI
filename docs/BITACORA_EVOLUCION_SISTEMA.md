@@ -280,6 +280,24 @@ flowchart TD
 
 ---
 
+### ADR-013: Migración Estructural de Partición Raíz a Disco ZFS Nuevo de 70 GB
+- **Fecha:** 2026-09-15
+- **Contexto:** La partición raíz `/dev/sda2` (6.9 GB) alcanzó saturación crítica (100% en múltiples ocasiones) al estar físicamente atrapada entre las particiones `/var` (sda3), swap (sda4) y `/srv` (sda5). Era imposible expandirla sin desplazar particiones de forma destructiva.
+- **Decisión (Camino 2 — Estructural):** Crear un nuevo disco virtual ZFS de 70 GB en Proxmox (`scsi2`, ZVOL `rpool/data/vm-104-disk-2`), particionar con tabla GPT limpia (EFI 1 GB + raíz ext4 69 GB), clonar el SO completo con `rsync -aAXH` desde el host Proxmox con los ZVOLs montados directamente, reinstalar GRUB/initramfs en chroot, y redirigir el GRUB EFI activo al nuevo UUID de raíz. El disco antiguo (`scsi0`, 65 GB) se conserva intacto como respaldo.
+- **Proceso de ejecución:**
+  1. Snapshot ZFS `vm-104-disk-1@Pre-Migration-Root-` previo al apagado.
+  2. Disco `vm-104-disk-2` (70 GB) creado en caliente (`pvesm alloc`) y asignado como `scsi2`.
+  3. VM apagada limpiamente con QEMU Guest Agent sync.
+  4. Desde host Proxmox: particionado GPT de `/dev/zd304` + formateo EFI FAT32 y root ext4 (`mkfs.ext4 -m 1 -L debian-root`).
+  5. Clonación con `rsync -aAXH` (5.0 GB copiados) excluyendo filesystems virtuales y separados.
+  6. `/etc/fstab` en nuevo root actualizado: UUID raíz `fbd12097...`, UUID EFI `D4D6-EFA1`.
+  7. Chroot con bind mounts; `grub-install --target=x86_64-efi`; `update-grub`; `update-initramfs -u`.
+  8. Corrección de `grub.cfg` en EFI activa (`sda1:/EFI/debian/grub.cfg`) y en nuevo root (`sdc2:/boot/grub/grub.cfg`) para apuntar al UUID `fbd12097...`.
+  9. Boot order Proxmox: `scsi2;scsi0;net0`. VM arrancó exitosamente desde `sdc2`.
+- **Consecuencias:** La VM Debian-13 ahora arranca desde `/dev/sdc2` con **62 GB libres en `/`** (uso 8%). Todos los servicios críticos restaurados: `riva-bridge` ✅, `openclaw.service` ✅, `openclaw-gateway` ✅, `gnome-remote-desktop` ✅, Frigate NVR ✅. El disco antiguo `sda` conserva `/var`, `[SWAP]` y `/srv` por UUID. Espacio libre total: raíz 62 GB + `/data` 47 GB = **109 GB libres**.
+
+---
+
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
 
 ```
