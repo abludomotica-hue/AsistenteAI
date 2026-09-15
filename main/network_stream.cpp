@@ -4,6 +4,9 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "config.h"
+#include <atomic>
+
+extern std::atomic<bool> interruptPlayback;
 
 static const char *TAG_NET = "NETWORK_STREAM";
 static esp_http_client_handle_t http_client = NULL;
@@ -126,6 +129,11 @@ esp_err_t network_stream_finish_and_receive(void) {
     char read_buffer[1024];
     int total_read = 0;
     while (1) {
+        if (interruptPlayback.load(std::memory_order_relaxed)) {
+            ESP_LOGW(TAG_NET, "Reproducción de voz interrumpida por el usuario (Barge-in).");
+            interruptPlayback.store(false, std::memory_order_relaxed);
+            break;
+        }
         int read_len = esp_http_client_read(http_client, read_buffer, sizeof(read_buffer));
         if (read_len <= 0) {
             if (read_len < 0) ESP_LOGE(TAG_NET, "Error leyendo datos de la respuesta");

@@ -17,6 +17,10 @@ esp_err_t audio_manager_play_chunk(const uint8_t *data, size_t length);
 // Reproduce tono/chime de confirmación de activación acústica
 esp_err_t audio_manager_play_chime(void);
 
+// Control digital de volumen (0 a 100%)
+esp_err_t audio_manager_set_volume(uint8_t percent);
+uint8_t audio_manager_get_volume(void);
+
 // Inicia el procesamiento activo manualmente (ej. botón táctil)
 void audio_manager_trigger_interaction(void);
 

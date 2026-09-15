@@ -84,4 +84,23 @@ void ES8311_Init(i2c_master_bus_handle_t bus_handle) {
     ESP_LOGI(TAG_ES, "Init completo y equilibrado (PA/DAC calibrados).");
 }
 
+static uint8_t s_current_volume_percent = 70; // 70% por defecto (Reg 0x32 = 0x80)
+
+bool es8311_set_volume(uint8_t volume_percent) {
+    if (!es8311_dev_handle) return false;
+    if (volume_percent > 100) volume_percent = 100;
+    // Mapeo perceptual seguro: 0% -> 0x00 (mute), 100% -> 0xBF (0 dB, nivel de fábrica sin recorte)
+    uint8_t reg_val = (uint8_t)((volume_percent * 191) / 100);
+    bool ok = es8311_write_reg(0x32, reg_val);
+    if (ok) {
+        s_current_volume_percent = volume_percent;
+        ESP_LOGI(TAG_ES, "Volumen ajustado a %d%% (Reg 0x32 = 0x%02X)", volume_percent, reg_val);
+    }
+    return ok;
+}
+
+uint8_t es8311_get_volume(void) {
+    return s_current_volume_percent;
+}
+
 #endif

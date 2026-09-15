@@ -315,3 +315,18 @@ esp_err_t audio_manager_play_chunk(const uint8_t *data, size_t length) {
     }
     return ESP_OK;
 }
+
+extern "C" bool es8311_set_volume(uint8_t volume_percent);
+extern "C" uint8_t es8311_get_volume(void);
+
+esp_err_t audio_manager_set_volume(uint8_t percent) {
+    if (es8311_set_volume(percent)) {
+        ESP_LOGI(TAG_AM, "Volumen maestro actualizado a %d%%", percent);
+        return ESP_OK;
+    }
+    return ESP_FAIL;
+}
+
+uint8_t audio_manager_get_volume(void) {
+    return es8311_get_volume();
+}
