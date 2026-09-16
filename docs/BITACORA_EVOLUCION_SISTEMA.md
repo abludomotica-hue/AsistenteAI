@@ -322,6 +322,17 @@ flowchart TD
 
 ---
 
+### ADR-016: Fijación de Direcciones IPv4 Estáticas en Servidores Virtuales (Debian AI Gateway y Home Assistant OS)
+- **Fecha:** 2026-09-16
+- **Contexto:** Durante las madrugadas, tras el vencimiento de la concesión DHCP de 8 horas (`dhcp4 state changed no lease`), el enrutador no renovaba los leases de red dinámicos. Las máquinas virtuales 104 (Debian 13) y 100 (Home Assistant OS) perdían completamente sus direcciones IPv4 (`192.168.1.58` y `192.168.1.34`), provocando que en la interfaz web de Proxmox solo aparecieran las interfaces puente de Docker (`172.17.0.1` y `172.30.232.1`), e imposibilitando la conexión por Escritorio Remoto (RDP) y el acceso web a Home Assistant.
+- **Decisión:**
+  1. Configurar direccionamiento estático manual permanente en la VM 104 (Debian-13): `192.168.1.58/24`, Gateway `192.168.1.1`, DNS `192.168.1.1; 8.8.8.8;` mediante NetworkManager (`ipv4.method manual`).
+  2. Configurar direccionamiento estático manual permanente en la VM 100 (Home Assistant OS): `192.168.1.34/24`, Gateway `192.168.1.1`, DNS `192.168.1.1; 8.8.8.8;` mediante el Supervisor CLI (`ha network update enp6s18 --ipv4-method static`).
+  3. Establecer autoconexión permanente infinita y registro persistente en disco para ambas máquinas.
+- **Consecuencias:** Disponibilidad ininterrumpida 24/7 sin dependencia de renovaciones de lease DHCP nocturnas. Conectividad directa e inmediata verificada tanto desde Windows (`mstsc` RDP puerto 3389, Home Assistant puerto 8123) como entre las capas del proyecto (`riva-bridge` enlazando con `http://192.168.1.34:8123` con respuesta HTTP 200 OK).
+
+---
+
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
 
 ```
@@ -331,7 +342,7 @@ flowchart TD
                                                                                       + [✅ OpenClaw 2026.9.4 Agent Gateway]
 ```
 
-1. **Infraestructura VM 104:** 100% Optimizada con 109 GB libres globales (62 GB en `/` + 47 GB en `/data`), XRDP + PipeWire Audio 100% operativo, OpenClaw 2026.9.4 y Riva Bridge activos en segundo plano.
+1. **Infraestructura VM 104 & VM 100:** 100% Optimizada con IPs estáticas permanentes (`192.168.1.58` y `192.168.1.34`), 109 GB libres en VM 104, XRDP + Audio PipeWire operativo, OpenClaw y Riva Bridge activos en segundo plano.
 2. **Firmware ESP32-P4:** Compilación y carga del binario con WakeNet 9, Chime I2S y control de volumen maestro vía VS Code.
 3. **Fase 4.3 (En Curso):** Diseño del servicio de streaming multimedia (reproductor de música y streams de audio continuo en segundo plano).
 4. **Mantenimiento Continuo de la Bitácora:** Registrar cada nueva mejora o cambio de infraestructura.
