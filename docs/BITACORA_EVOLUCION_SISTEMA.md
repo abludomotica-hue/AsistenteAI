@@ -310,6 +310,18 @@ flowchart TD
 
 ---
 
+### ADR-015: Resolución de Cierre Inmediato de Sesión XRDP por Conflicto de Instancia de GNOME y GDM Autologin
+- **Fecha:** 2026-09-16
+- **Contexto:** Tras un reinicio de la máquina virtual Debian 13 en Proxmox, las conexiones entrantes por RDP desde Windows (`mstsc`) se cerraban automáticamente a los ~2 segundos tras autenticarse con éxito en la pantalla de bienvenida de XRDP (`Session on display 10 has finished`).
+- **Análisis de Causa Raíz:** En `/etc/gdm3/daemon.conf`, `AutomaticLoginEnable = true` iniciaba automáticamente en el arranque una sesión gráfica completa de GNOME para el usuario `ablutech` en la consola física (`seat0` / `tty2`). Al conectarse vía XRDP en el display `:10.0`, `gnome-session-binary` detectó la sesión previa activa en D-Bus (`WARNING: Session manager already running!`) y abortó inmediatamente por el modelo singleton estricto de GNOME.
+- **Decisión:** 
+  1. Deshabilitar el inicio de sesión automático en `/etc/gdm3/daemon.conf` (`AutomaticLoginEnable = false`), manteniendo GDM en la pantalla de bienvenida aislada (`Debian-gdm` en `tty1`).
+  2. Reiniciar GDM y los servicios `xrdp` / `xrdp-sesman` para purgar descriptores e instancias huérfanas.
+  3. Preservar la ejecución en segundo plano 24/7 de los servicios de IA de borde (`riva-bridge.service` y `openclaw`) bajo systemd multi-user y systemd user linger.
+- **Consecuencias:** Conexión gráfica XRDP restaurada al 100% con carga inmediata del escritorio GNOME para `ablutech`. Se liberan ~650 MB de memoria RAM en la VM al no ejecutar un escritorio local ocioso en la consola virtual. Redirección de audio PipeWire y servicios de IA totalmente operativos.
+
+---
+
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
 
 ```
@@ -319,7 +331,7 @@ flowchart TD
                                                                                       + [✅ OpenClaw 2026.9.4 Agent Gateway]
 ```
 
-1. **Infraestructura VM 104:** 100% Optimizada con 83.4 GB libres globales, nuevo disco `/dev/sdb1` de 50 GB montado en `/data`, OpenClaw 2026.9.4 instalado y snapshot de resguardo activo.
+1. **Infraestructura VM 104:** 100% Optimizada con 109 GB libres globales (62 GB en `/` + 47 GB en `/data`), XRDP + PipeWire Audio 100% operativo, OpenClaw 2026.9.4 y Riva Bridge activos en segundo plano.
 2. **Firmware ESP32-P4:** Compilación y carga del binario con WakeNet 9, Chime I2S y control de volumen maestro vía VS Code.
 3. **Fase 4.3 (En Curso):** Diseño del servicio de streaming multimedia (reproductor de música y streams de audio continuo en segundo plano).
 4. **Mantenimiento Continuo de la Bitácora:** Registrar cada nueva mejora o cambio de infraestructura.
