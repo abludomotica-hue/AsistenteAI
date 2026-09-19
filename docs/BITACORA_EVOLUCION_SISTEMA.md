@@ -324,25 +324,63 @@ flowchart TD
 
 ### ADR-016: Fijación de Direcciones IPv4 Estáticas en Servidores Virtuales (Debian AI Gateway y Home Assistant OS)
 - **Fecha:** 2026-09-16
-- **Contexto:** Durante las madrugadas, tras el vencimiento de la concesión DHCP de 8 horas (`dhcp4 state changed no lease`), el enrutador no renovaba los leases de red dinámicos. Las máquinas virtuales 104 (Debian 13) y 100 (Home Assistant OS) perdían completamente sus direcciones IPv4 (`192.168.1.58` y `192.168.1.34`), provocando que en la interfaz web de Proxmox solo aparecieran las interfaces puente de Docker (`172.17.0.1` y `172.30.232.1`), e imposibilitando la conexión por Escritorio Remoto (RDP) y el acceso web a Home Assistant.
-- **Decisión:**
-  1. Configurar direccionamiento estático manual permanente en la VM 104 (Debian-13): `192.168.1.58/24`, Gateway `192.168.1.1`, DNS `192.168.1.1; 8.8.8.8;` mediante NetworkManager (`ipv4.method manual`).
-  2. Configurar direccionamiento estático manual permanente en la VM 100 (Home Assistant OS): `192.168.1.34/24`, Gateway `192.168.1.1`, DNS `192.168.1.1; 8.8.8.8;` mediante el Supervisor CLI (`ha network update enp6s18 --ipv4-method static`).
+- **Contexto:** Durante las madrugadas, tras el vencimiento de la concesión DHCP de 8 horas (`dhcp4 state changed no lease`), el enrutador no renovaba los leases de red dinámicos. Las máquinas virtuales 104 (Debian 13) y 100 (Home Assistant OS) perdían completamente sus direcciones IPv4  2. Configurar direccionamiento estático manual permanente en la VM 100 (Home Assistant OS): `192.168.1.34/24`, Gateway `192.168.1.1`, DNS `192.168.1.1; 8.8.8.8;` mediante el Supervisor CLI (`ha network update enp6s18 --ipv4-method static`).
   3. Establecer autoconexión permanente infinita y registro persistente en disco para ambas máquinas.
 - **Consecuencias:** Disponibilidad ininterrumpida 24/7 sin dependencia de renovaciones de lease DHCP nocturnas. Conectividad directa e inmediata verificada tanto desde Windows (`mstsc` RDP puerto 3389, Home Assistant puerto 8123) como entre las capas del proyecto (`riva-bridge` enlazando con `http://192.168.1.34:8123` con respuesta HTTP 200 OK).
+
+---
+
+### ADR-017: Dashboard HMI Avanzado — Reloj Digital SNTP, Clima Home Assistant y Diálogo Textual en LVGL 9
+- **Fecha:** 2026-09-16
+- **Contexto:** La interfaz requería mayor dinamismo e información visual contextual: mostrar la hora y fecha local en español, condiciones climáticas en tiempo real y desplegar en pantalla tanto la transcripción de voz del usuario como la respuesta textual del modelo LLM.
+- **Decisión:**
+  1. Integrar cliente SNTP nativo en ESP32-P4 con zona horaria de Chile Continental (`TZ = CLT3`).
+  2. Implementar temporizador LVGL cada 1.000 ms (`clock_timer_cb`) para refrescar hora (`HH:MM`) y fecha (`"Día, DD Mes"`) sin bloquear el hilo gráfico.
+  3. Crear endpoint `/v1/weather` en el Gateway Debian consultando `weather.forecast_casa` en Home Assistant con caché de 60 segundos. Tarea periódica FreeRTOS en Core 0 (`weather_update_task`) actualizando temperatura, condición y humedad cada 5 minutos.
+  4. Extender `/v1/conversation_stream` con cabeceras `X-Transcript` y `X-Response-Text` procesadas de inmediato por `ui_set_conversation_text()`.
+- **Consecuencias:** Experiencia HMI moderna a 60 FPS con reloj en tiempo real, telemetría ambiental viva y confirmación visual textual de cada conversación con el asistente.
+
+---
+
+### ADR-018: Reproductor Multimedia y Radio Web en Streaming con Buffer PSRAM y Auto-Pausa por Wake Word
+- **Fecha:** 2026-09-16
+- **Contexto:** Dotar al dispositivo de streaming de audio continuo por Internet (emisoras de radio MP3 / Icecast) a 44.1 kHz estéreo hacia el DAC ES8311, coexistiendo de forma armónica e instantánea con el pipeline conversacional a 16 kHz.
+- **Decisión:**
+  1. Desarrollar motor multimedia con **Ring Buffer circular anti-jitter de 512 KB en PSRAM** (`MALLOC_CAP_SPIRAM`), otorgando >30 segundos de resiliencia frente a variaciones de red Wi-Fi.
+  2. Incorporar decodificador de punto fijo **Helix MP3** (`chmorgan__esp-libhelix-mp3`) anclado a Core 0 (consumo <8% CPU).
+  3. Reconfiguración dinámica del reloj estándar I2S TX (`audio_manager_set_sample_rate`) con MCLK tracking automático (`256 * Fs`), protegido por mutex `s_i2s_tx_mutex`.
+  4. Interfaz gráfica dedicada en LVGL 9 (`scr_media`) con controles táctiles de transporte (Play/Pause, Next, Prev, Stop), volumen sincronizado y lista de emisoras.
+  5. Hooks de coexistencia conversacional (Ducking / Auto-Pause): `media_player_on_voice_start()` pausa la música al instante al detectar el Wake Word o pulsar la pantalla, restaurando 16 kHz; y `media_player_on_voice_finish()` reanuda el streaming tras 400 ms de finalizar la respuesta del asistente.
+  6. Resolución de streaming HTTP: inclusión obligatoria de `esp_http_client_fetch_headers()`, soporte de redirecciones HTTP y cierre activo de sockets en detención.
+- **Consecuencias:** Streaming de radio por Internet continuo, fluido y estable certificado por el usuario. Pausa instantánea y automática al decir "Hey Nova", permitiendo interacción conversacional fluida y reanudación musical transparente.
+
+---
+
+### ADR-019: Despliegue de Google Antigravity CLI (`agy`) en el Servidor Debian AI Gateway
+- **Fecha:** 2026-09-19
+- **Contexto:** Necesidad de contar con la plataforma agentica de desarrollo de Google Antigravity de forma nativa en la máquina virtual Debian 13 (`192.168.1.58`), permitiendo orquestar agentes autónomos, interactuar con modelos avanzados, ejecutar diagnósticos y gestionar herramientas MCP directamente desde la consola del servidor.
+- **Decisión:**
+  1. Instalar el cliente nativo oficial **Google Antigravity CLI (`agy` v1.2.7 x86_64)** mediante el instalador oficial verificado por hash SHA-512 (`https://antigravity.google/cli/install.sh`).
+  2. Aprovisionar el binario en `/home/ablutech/.local/bin/agy` y enlazar simbólicamente en `/usr/local/bin/agy` para disponibilidad global e inmediata en todas las sesiones interactivas (SSH, XRDP y tareas programadas).
+  3. Configurar el flujo de autenticación OAuth de Google compatible tanto con navegadores locales en entorno de escritorio XRDP (Google Chrome) como con terminales headless remotas mediante URL de autorización.
+- **Consecuencias:** Plataforma agentica Google Antigravity 100% operativa en Debian con cero consumo de recursos en reposo (binario estático compilado), lista para asistir en el desarrollo y mantenimiento continuo del AI Gateway.
 
 ---
 
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
 
 ```
-[✅ WakeNet 9 / Voz] \
-                      --> [✅ Feedback Acústico Chime] --> [✅ Streaming LAN Chunks] --> [✅ NVIDIA NIM Cloud]
-[✅ Touch GT911]    /                                                                      Parakeet + Nemotron + Magpie
-                                                                                      + [✅ OpenClaw 2026.9.4 Agent Gateway]
+[✅ WakeNet 9: "Hey Nova" / "Hi ESP"] \
+                                      --> [✅ Chime I2S] --> [✅ Streaming LAN Chunks] --> [✅ Debian Gateway (NIM)]
+[✅ Touch GT911 / Pantalla LVGL 9]    /                                                         Parakeet + Nemotron + Magpie
+                                                                                           + [✅ Home Assistant Control]
+[✅ Radio Web: Helix MP3 + 512KB PSRAM] ----> [✅ Auto-Pause / Ducking]                    + [✅ Weather + SNTP Clock]
+                                                                                           + [✅ Hardening OTA A/B]
+                                                                                           + [✅ Google Antigravity CLI]
 ```
 
-1. **Infraestructura VM 104 & VM 100:** 100% Optimizada con IPs estáticas permanentes (`192.168.1.58` y `192.168.1.34`), 109 GB libres en VM 104, XRDP + Audio PipeWire operativo, OpenClaw y Riva Bridge activos en segundo plano.
-2. **Firmware ESP32-P4:** Compilación y carga del binario con WakeNet 9, Chime I2S y control de volumen maestro vía VS Code.
-3. **Fase 4.3 (En Curso):** Diseño del servicio de streaming multimedia (reproductor de música y streams de audio continuo en segundo plano).
+1. **Fases 1, 2, 3 y 4 del Roadmap:** **100% Completadas y Certificadas en Hardware Real.**
+2. **Plataformas de IA en Gateway:** NVIDIA Riva Bridge v2 + OpenClaw 2026.9.4 + Google Antigravity CLI 1.2.7 disponibles concurrentemente.
+3. **Próxima Fase:** Definir alcance de la **Fase 5: Pruebas de Estrés de Confiabilidad 24/7 y Funcionalidades Avanzadas** (MQTT Event Bus, Home Assistant Media Player Entity, alarmas locales, timers interactivos o personalización de temas UI).
 4. **Mantenimiento Continuo de la Bitácora:** Registrar cada nueva mejora o cambio de infraestructura.
+
