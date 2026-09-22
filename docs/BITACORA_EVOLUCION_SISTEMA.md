@@ -367,6 +367,19 @@ flowchart TD
 
 ---
 
+### ADR-020: Despliegue del Aplicativo de Escritorio Google Antigravity 2.0 (Desktop Hub & Orchestrator)
+- **Fecha:** 2026-09-22
+- **Contexto:** El usuario solicitó disponer de la aplicación de escritorio gráfica **Antigravity 2.0** en el servidor Debian 13, permitiendo contar con el entorno visual de orquestación de agentes, Canvas interactivo, gestión visual de MCP y tareas programadas directamente en la sesión de Escritorio Remoto (XRDP).
+- **Decisión:**
+  1. Obtener el paquete oficial Linux x64 de **Antigravity 2.0 (v2.15.1)** desde el bucket de producción de Google (`https://storage.googleapis.com/antigravity-public/antigravity-hub/2.15.1-5880727900913664/linux-x64/Antigravity.tar.gz`).
+  2. Desplegar los binarios y recursos Electron en `/opt/antigravity` (alojado transparentemente en el disco de alta capacidad `/data/opt` con 31 GB disponibles).
+  3. Hardening de seguridad Chromium: fijar permisos SUID `4755` sobre `/opt/antigravity/chrome-sandbox` (propiedad `root:root`) permitiendo ejecución sandboxed sin necesidad del flag inseguro `--no-sandbox`.
+  4. Descargar icono oficial de alta resolución (`/opt/antigravity/antigravity.png`) y generar lanzador de escritorio GNOME estándar `/usr/share/applications/antigravity.desktop` y acceso directo en `/home/ablutech/Desktop/` con marcado `metadata::trusted true`.
+  5. Crear enlace simbólico de comando `/usr/local/bin/antigravity` para lanzamiento desde terminal o scripts.
+- **Consecuencias:** Aplicativo gráfico Antigravity 2.0 disponible al 100% en el menú de aplicaciones de GNOME y en el escritorio vía XRDP. Coexistencia armónica con `agy` (CLI), `riva-bridge` y `openclaw`.
+
+---
+
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
 
 ```
@@ -376,11 +389,11 @@ flowchart TD
                                                                                            + [✅ Home Assistant Control]
 [✅ Radio Web: Helix MP3 + 512KB PSRAM] ----> [✅ Auto-Pause / Ducking]                    + [✅ Weather + SNTP Clock]
                                                                                            + [✅ Hardening OTA A/B]
-                                                                                           + [✅ Google Antigravity CLI]
+                                                                                           + [✅ Google Antigravity CLI + Desktop 2.0]
 ```
 
 1. **Fases 1, 2, 3 y 4 del Roadmap:** **100% Completadas y Certificadas en Hardware Real.**
-2. **Plataformas de IA en Gateway:** NVIDIA Riva Bridge v2 + OpenClaw 2026.9.4 + Google Antigravity CLI 1.2.7 disponibles concurrentemente.
+2. **Plataformas de IA en Gateway:** NVIDIA Riva Bridge v2 + OpenClaw 2026.9.4 + Google Antigravity CLI 1.2.7 + Google Antigravity 2.0 Desktop (v2.15.1) disponibles concurrentemente.
 3. **Próxima Fase:** Definir alcance de la **Fase 5: Pruebas de Estrés de Confiabilidad 24/7 y Funcionalidades Avanzadas** (MQTT Event Bus, Home Assistant Media Player Entity, alarmas locales, timers interactivos o personalización de temas UI).
 4. **Mantenimiento Continuo de la Bitácora:** Registrar cada nueva mejora o cambio de infraestructura.
 
