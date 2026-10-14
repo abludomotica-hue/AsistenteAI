@@ -414,20 +414,42 @@ flowchart TD
 
 ---
 
+### ADR-023: Consolidación de Ubuntu 26.04 LTS como Nodo Principal de IA (Dual IP Gateway, Systemd Waitress y DaVinci Resolve Studio 21)
+- **Fecha:** 2026-10-14
+- **Contexto:** Tras certificar el acceso remoto gráfico fluido a 60 FPS por RDP sobre Ubuntu 26.04.1 LTS (VM 106), se procedió a transferir la responsabilidad del nodo principal de IA del proyecto desde la máquina virtual Debian 13 (VM 104) hacia la nueva estación de trabajo Ubuntu. El firmware del hardware ESP32-P4 físico tiene grabada en ROM la dirección fija `http://192.168.1.58:5000`, mientras que la VM 106 operaba en `192.168.1.74`. Adicionalmente, se requería habilitar el entorno de computación audiovisual NLE para DaVinci Resolve Studio 21.1.1 con aceleración sobre la GPU NVIDIA GTX 750 Ti y las herramientas de transcodificación FFmpeg.
+- **Decisión:**
+  1. **Dual IP Binding en Interfaz ens18 (`192.168.1.74` + `192.168.1.58`):** Configuración permanente en `/etc/netplan/00-installer-config.yaml` vinculando un alias de red secundario `192.168.1.58/24` sobre la tarjeta virtual `ens18` (aprovechando el cese definitivo de la VM 104). Esto permite que el microcontrolador ESP32-P4 físico transmita sus chunks de audio directamente al nuevo gateway sin requerir recompilación ni reflasheo por cable USB.
+  2. **Despliegue de Producción de AI Gateway (`riva-bridge`):**
+     - Creación de entorno virtual Python 3.14 aislado (`/home/ablutech/riva-bridge/venv`) con `flask`, `waitress`, `requests`, `python-dotenv` y `nvidia-riva-client`.
+     - Creación del servicio systemd `/etc/systemd/system/riva-bridge.service` con servidor WSGI `waitress` a 8 hilos sobre el puerto 5000 (`Restart=always`, `RestartSec=5`).
+     - Validación del endpoint `/health` confirmando Parakeet ASR, Nemotron-3 30B LLM, Magpie TTS y Home Assistant (`http://192.168.1.34:8123`) 100% operativos.
+  3. **Sincronización del Repositorio de Trabajo:** Clonación del repositorio `AsistenteAI` en `/home/ablutech/AsistenteAI`, configurando variables de entorno `.env` para trabajo y desarrollo agéntico continuo desde Ubuntu.
+  4. **Instalación de DaVinci Resolve Studio 21.1.1:**
+     - Despliegue de dependencias multimedia (`ffmpeg 7`, `libglu1-mesa`, `libapr1t64`, `libaprutil1t64`, `libgstreamer1.0-0`, `ocl-icd-libopencl1`, `libfuse2t64`).
+     - Instalación desatendida del software en `/opt/resolve/bin/resolve` mediante `SKIP_PACKAGE_CHECK=1` y registro de accesos de escritorio en `/usr/share/applications/com.blackmagicdesign.resolve.desktop`.
+     - Purga de instaladores temporales en `~/Descargas`, recuperando 8.2 GB de almacenamiento SSD (dejando 38 GB libres, 42% de uso).
+- **Consecuencias:**
+  - Ubuntu 26.04.1 LTS es ahora el nodo activo de IA en tiempo real para el ESP32-P4 y la estación NLE de renderizado con GPU NVIDIA.
+  - Zero-touch para el hardware edge físico (cero reflashes requeridos).
+  - DaVinci Resolve Studio 21 y FFmpeg disponibles localmente para el pipeline agéntico ADCRA.
+
+---
+
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
 
 ```
 [✅ WakeNet 9: "Hey Nova" / "Hi ESP"] \
-                                      --> [✅ Chime I2S] --> [✅ Streaming LAN Chunks] --> [✅ Debian Gateway (NIM)]
+                                      --> [✅ Chime I2S] --> [✅ Streaming LAN Chunks] --> [✅ Ubuntu 26 AI Gateway (NIM)]
 [✅ Touch GT911 / Pantalla LVGL 9]    /                                                         Parakeet + Nemotron + Magpie
                                                                                            + [✅ Home Assistant Control]
 [✅ Radio Web: Helix MP3 + 512KB PSRAM] ----> [✅ Auto-Pause / Ducking]                    + [✅ Weather + SNTP Clock]
-                                                                                           + [✅ Hardening OTA A/B]
-                                                                                           + [✅ Google Antigravity CLI + Desktop 2.0]
+                                                                                           + [✅ DaVinci Resolve Studio 21 + FFmpeg 7]
+                                                                                           + [✅ XRDP 60 FPS + PipeWire Audio]
 ```
 
 1. **Fases 1, 2, 3 y 4 del Roadmap:** **100% Completadas y Certificadas en Hardware Real.**
-2. **Plataformas de IA en Gateway:** NVIDIA Riva Bridge v2 + OpenClaw 2026.9.4 + Google Antigravity CLI 1.2.7 + Google Antigravity 2.0 Desktop (v2.15.1) disponibles concurrentemente.
-3. **Próxima Fase:** Definir alcance de la **Fase 5: Pruebas de Estrés de Confiabilidad 24/7 y Funcionalidades Avanzadas** (MQTT Event Bus, Home Assistant Media Player Entity, alarmas locales, timers interactivos o personalización de temas UI).
-4. **Mantenimiento Continuo de la Bitácora:** Registrar cada nueva mejora o cambio de infraestructura.
+2. **Nodo AI Principal:** Migrado exitosamente a Ubuntu 26.04.1 LTS (`192.168.1.74` / `192.168.1.58:5000`).
+3. **Estación NLE:** DaVinci Resolve Studio 21.1.1 + FFmpeg 7.1 listos para producción autónoma de video.
+4. **Próxima Fase:** Pruebas de integración del microcontrolador físico ESP32-P4 contra el nuevo Gateway y ejecución de pipelines de video con la API de DaVinci Resolve.
+
 
