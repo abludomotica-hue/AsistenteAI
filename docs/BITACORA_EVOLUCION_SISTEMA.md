@@ -399,6 +399,21 @@ flowchart TD
 
 ---
 
+### ADR-022: Despliegue de Workstation Ubuntu 26.04.1 LTS con GPU NVIDIA Driver 580, XRDP PipeWire y Optimización ZRAM
+- **Fecha:** 2026-10-14
+- **Contexto:** Se requería una estación de trabajo virtual moderna en Proxmox VE orientada al desarrollo de aplicaciones, interfaces avanzadas y flujos de renderizado audiovisual NLE (DaVinci Resolve Studio), con aceleración por hardware NVIDIA, alta compatibilidad de librerías, escritorio remoto fluido a 60 FPS con audio estéreo y políticas de actualización automática.
+- **Decisión:**
+  1. **Saneamiento de Almacenamiento en Host:** Purga del snapshot histórico `Antes_de_reparar` en VM 105 (Windows 10), recuperando 79.2 GB reales y reduciendo el uso del pool ZFS al 57.5% (178 GB disponibles).
+  2. **Aprovisionamiento de VM 106 (`Ubuntu-26-Workstation`):** Máquina Q35 con BIOS OVMF UEFI, 8 vCPUs Xeon E5-2680 v4 (AVX2/FMA3), 9.0 GiB de RAM física y disco virtual de 70 GB SSD en `local-zfs` con `discard=on,ssd=1`.
+  3. **Sistema Operativo:** Instalación de la nueva versión oficial **Ubuntu 26.04.1 LTS Desktop** con kernel Linux 7.0.
+  4. **Expansión de Memoria con ZRAM (zstd):** Dispositivo `/dev/zram0` de 8.2 GiB al 100% de RAM con algoritmo `zstd` y prioridad máxima 100 (`PRIO=100`), expandiendo la memoria utilizable a ~20 GiB (8.2 GB RAM + 8.2 GB ZRAM + 4.0 GB swapfile de disco). Tuning de kernel (`vm.swappiness=150`, `vm.vfs_cache_pressure=50`) y techo de logs de `journald` a 250M.
+  5. **Escritorio Remoto de Alta Fidelidad (XRDP + PipeWire):** Integración del módulo nativo oficial `pipewire-module-xrdp` con autostart en XDG, permitiendo conexión por Escritorio Remoto de Windows (`mstsc` en `192.168.1.74:3389`) a 60 FPS con redirección de audio estéreo en tiempo real. Forzado de sesión pura X11 en GDM3 (`WaylandEnable=false`).
+  6. **Aceleración Gráfica Dedicada (NVIDIA Passthrough):** Conmutación del bus PCIe `0000:07:00` (NVIDIA GeForce GTX 750 Ti 4GB) e instalación de los drivers oficiales `nvidia-driver-580` (v580.178.04 con soporte CUDA 13.0) compilados vía DKMS, acelerando por hardware el compositor `gnome-shell`.
+  7. **Runtimes y Dependencias de DaVinci Resolve:** Aprovisionamiento de Node.js v22.22.1 LTS, npm 9.2.0, Python 3.14 con venv/pip, build-essential (GCC 15) y librerías del sistema `libapr1`, `libaprutil1`, `libglu1-mesa`, `libgstreamer1.0-0` y `libgstreamer-plugins-base1.0-0`.
+- **Consecuencias:** Estación de trabajo gráfica Ubuntu 26.04 LTS 100% operativa en `192.168.1.74`. Cero latencia de I/O, aceleración GPU validada y compatibilidad absoluta con herramientas de IA, NLE y desarrollo de software.
+
+---
+
 ## 🎯 5. Estado Actual del Sistema y Próximos Pasos
 
 ```
